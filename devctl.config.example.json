@@ -1,0 +1,61 @@
+{
+  "_comment": [
+    "把本文件复制到「工作区根目录」并改名为 devctl.config.json。",
+    "devctl 从当前目录向上查找该文件来定位工作区根，所以放在根上任何子目录都能用。",
+    "原则：只写差异。构建系统、可运行模块、脚本名、端口都能自动识别，不必重复声明。",
+    "空字符串与缺省等价，表示自动推断（例如 javaHome 留空则读环境变量 JAVA_HOME）。"
+  ],
+
+  "exclude": [
+    "**/node_modules",
+    "**/target",
+    "**/dist",
+    "**/.git",
+    "**/.deploy",
+    "deprecated",
+    "archives"
+  ],
+
+  "extraRoots": [],
+  "maxDepth": 2,
+
+  "toolchain": {
+    "javaHome": "",
+    "mavenHome": "",
+    "nvmRoot": "",
+    "defaultNode": ""
+  },
+
+  "defaults": {
+    "devScripts": ["dev", "localdev", "local"],
+    "buildScripts": ["build:prod", "build:production", "build"]
+  },
+
+  "overrides": {
+    "my-web-app": {
+      "basePort": 8080
+    },
+    "my-api-service": {
+      "debugPort": 5005
+    },
+    "legacy-app": {
+      "node": "16.20.2"
+    },
+    "lib-only-project": {
+      "runnable": false
+    },
+    "vendor/some-nested-repo": {
+      "runnable": false,
+      "installOnly": true
+    }
+  },
+
+  "debug": {
+    "port": 5005
+  },
+
+  "limits": {
+    "maxConcurrentBuilds": 2,
+    "logTailLines": 200
+  }
+}
