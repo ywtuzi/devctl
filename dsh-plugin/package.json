@@ -1,0 +1,29 @@
+{
+  "name": "dsh-devctl-panel",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "工作区项目运行器面板：一键启动/打包前后端项目",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "DevCTL 项目运行器",
+    "description": "扫描工作区里的前后端项目，在悬浮面板中一键运行、打包、停止。自动处理 Node 版本、JAVA_HOME 与端口冲突。"
+  }
+}

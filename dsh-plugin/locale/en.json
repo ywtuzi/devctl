@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "DevCTL project runner",
+    "description": "Scans frontend and backend projects in the workspace and runs, builds, or stops them from a floating panel. Node versions, JAVA_HOME, and port conflicts are handled automatically."
+  }
+}

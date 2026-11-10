@@ -1,0 +1,13 @@
+- insert:
+    - id: devctl-panel
+      name: 'dsh-devctl-panel'
+      # 不写 config：默认以 DSH 当前工作目录作为工作区根，
+      # CLI 依次在下列位置查找：
+      #   1. <root>/devctl/bin/devctl.js
+      #   2. <root>/bin/devctl.js
+      #   3. 本插件相邻的 ../bin/devctl.js（插件与 CLI 同仓时命中）
+      #
+      # 需要固定路径时再取消注释：
+      # config:
+      #   root: '<工作区根绝对路径>'
+      #   cliPath: '<devctl/bin/devctl.js 绝对路径>'
