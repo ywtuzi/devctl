@@ -40,12 +40,13 @@
     "devctl": "node bin/devctl.js",
     "vendor": "node scripts/vendor.mjs",
     "vendor:check": "node scripts/vendor.mjs --check",
-    "test": "node test/util.mjs && node test/detectors.mjs && node test/scan.mjs && node test/runid.mjs && node test/ports.mjs",
+    "test": "node test/util.mjs && node test/detectors.mjs && node test/scan.mjs && node test/runid.mjs && node test/ports.mjs && node test/module.mjs",
     "test:util": "node test/util.mjs",
     "test:detectors": "node test/detectors.mjs",
     "test:scan": "node test/scan.mjs",
     "test:runid": "node test/runid.mjs",
-    "test:ports": "node test/ports.mjs"
+    "test:ports": "node test/ports.mjs",
+    "test:module": "node test/module.mjs"
   },
   "comment": {
     "定位": "工作区级的「项目运行器」：扫描多仓、统一 run/build/debug。dsh-plugin/ 是它给 DeepSeek Harness 做的薄壳，不是另一套逻辑——插件所有操作都转成对 bin/devctl.js 的调用。",

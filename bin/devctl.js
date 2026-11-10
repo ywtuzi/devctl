@@ -26,12 +26,14 @@ function parseArgs(argv) {
     else if (a === '--node') opts.node = argv[++i]
     else if (a === '--port') opts.port = Number(argv[++i])
     else if (a === '--timeout') opts.timeout = Number(argv[++i])
+    else if (a === '--module') opts.module = argv[++i]
     else if (a === '--lines') opts.lines = Number(argv[++i])
     else if (a === '--type') opts.type = argv[++i]
     else if (a.startsWith('--root=')) opts.root = a.slice(7)
     else if (a.startsWith('--node=')) opts.node = a.slice(7)
     else if (a.startsWith('--port=')) opts.port = Number(a.slice(7))
     else if (a.startsWith('--timeout=')) opts.timeout = Number(a.slice(10))
+    else if (a.startsWith('--module=')) opts.module = a.slice(9)
     else if (a.startsWith('--lines=')) opts.lines = Number(a.slice(8))
     else if (!a.startsWith('-')) opts._.push(a)
   }
@@ -94,14 +96,17 @@ async function cmdList(opts, ctx) {
             type: p.type,
             runnable: p.runnable,
             node: p.node,
+            version: p.version || null,
             basePort: p.basePort,
             tasks: Object.entries(p.tasks).map(([k, t]) => ({
               name: k,
               kind: t.kind,
+              section: t.section || null,
               label: t.label || null,
               platform: t.platform || null,
               action: t.action || null,
               detail: t.detail || null,
+              note: t.note || null,
             })),
             warnings: p.warnings,
           })),
@@ -323,7 +328,7 @@ async function cmdRun(opts, ctx) {
 async function cmdBuild(opts, ctx) {
   const projects = scan(ctx.root, ctx.config)
   const id = opts._[1]
-  if (!id) fail('用法: devctl build <项目ID> [任务名] [--timeout 毫秒]')
+  if (!id) fail('用法: devctl build <项目ID> [任务名] [--module <模块>] [--timeout 毫秒]')
   const project = requireProject(projects, id)
   if (opts.node) project.node = opts.node
 
@@ -333,8 +338,17 @@ async function cmdBuild(opts, ctx) {
     if (!taskName) fail(`项目 "${id}" 没有可构建任务`)
   }
 
+  // 单模块：只认 pom 里声明过的模块，避免打错目录名跑到别的 reactor 上
+  if (opts.module) {
+    const modules = project.modules || []
+    if (!modules.includes(opts.module)) {
+      fail(`项目 "${id}" 没有模块 "${opts.module}"\n  可用: ${modules.join(', ') || '(该项目不是多模块工程)'}`)
+    }
+  }
+
   if (!opts.json && !opts.quiet) {
-    console.log(`${c.dim('▶')} ${c.bold(project.id)} ${taskName} ${c.dim(`(${project.absPath})`)}`)
+    const scope = opts.module ? ` ${c.dim(`-pl ${opts.module}`)}` : ''
+    console.log(`${c.dim('▶')} ${c.bold(project.id)} ${taskName}${scope} ${c.dim(`(${project.absPath})`)}`)
   }
 
   const result = await buildTask({
@@ -343,6 +357,7 @@ async function cmdBuild(opts, ctx) {
     taskName,
     config: ctx.config,
     json: opts.json,
+    module: opts.module || null,
     timeoutMs: opts.timeout,
     onData:
       opts.json || opts.quiet
@@ -557,6 +572,7 @@ ${c.bold('devctl')} —— 多仓工作区项目运行器
   --json            机器可读输出（供 AI agent 与面板使用）
   --node <版本>     临时指定 Node 版本
   --port <端口>     指定端口
+  --module <模块>   只构建/发布这个 Maven 模块（默认整个 reactor）
   --timeout <ms>    构建超时
   --lines <n>       日志行数
 
@@ -565,6 +581,7 @@ ${c.bold('devctl')} —— 多仓工作区项目运行器
   devctl run web-app
   devctl run api-service debug
   devctl build api-service --timeout 600000
+  devctl build auth deploy --module cloud-auth-api
   devctl exclude legacy-app
   devctl include vendor/legacy-app
   devctl list --json

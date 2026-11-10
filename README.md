@@ -96,6 +96,15 @@ devctl logs web-a_dev_20260101090000 -f   # 跟日志
 
 ```jsonc
 {
+  "defaults": {
+    // Maven 生命周期任务：每条都是完整的 goal 列表，可整体改写成自己的流水线
+    "mavenBuild":   ["clean", "package", "-DskipTests"],
+    "mavenInstall": ["clean", "install", "-DskipTests"],
+    "mavenTest":    ["test"],
+    "mavenClean":   ["clean"],
+    "mavenDeps":    ["dependency:tree"],
+    "mavenDeploy":  ["clean", "deploy", "-DskipTests"]
+  },
   "toolchain": {
     "javaHome": "",          // 留空 → 读环境变量 JAVA_HOME
     "mavenHome": "",         // 留空 → 用 PATH 上的 mvn
@@ -129,6 +138,36 @@ devctl logs web-a_dev_20260101090000 -f   # 跟日志
 | 项目在根目录之外 | `extraRoots` 加一行路径 |
 | 纳入之前排除的项目 | `devctl include <项目>`，或删掉 `exclude` 里那行 |
 
+### 后端（Maven）任务
+
+每个 `pom.xml` 项目自带一整组生命周期操作，不需要逐个配：
+
+| 任务 | 命令 | 说明 |
+|---|---|---|
+| `run` / `debug` | `spring-boot:run` | 调试额外注入 JDWP（默认 5005） |
+| `build` | `clean package -DskipTests` | 只出模块 jar，不跑 assembly |
+| `install` | `clean install -DskipTests` | 装进本地仓，供其它仓依赖 |
+| `test` | `test` | 增量编译并跑单测 |
+| `clean` | `clean` | 删 `target/` |
+| `deps` | `dependency:tree` | 依赖树 |
+| `deploy` | `clean deploy -DskipTests` | **发布到私服，不可撤销** |
+
+`deploy` 的地址来自 pom 的 `<distributionManagement>`：版本带 `-SNAPSHOT` 走
+`<snapshotRepository>`，否则走 `<repository>`。面板会先算出这条命令、把目标私服地址
+写在确认框里，并单独归到「发布」分组；pom 没配 `distributionManagement` 时直接提示
+「deploy 会失败」，而不是让你点完才看到报错。
+
+**多模块仓默认作用于整个 reactor。** 比如 `hs-cloud-auth` 是 9 个模块 + 根 pom，
+`mvn deploy` 会发 10 个构件。只想发 `cloud-auth-api` 一个：
+
+- 面板：确认框里把「模块」从 `全部模块` 切到 `cloud-auth-api`
+- CLI：`devctl build hs-cloud-auth deploy --module cloud-auth-api`
+
+命令会变成 `mvn clean deploy -DskipTests -pl cloud-auth-api`。
+
+注意**不要**自己补 `-am`：它会把该模块的上游一起拉进 reactor，于是 deploy/install
+连带作用在它们身上——和「只发一个」正好相反。devctl 指定模块时会主动摘掉 `-am`。
+
 ## 识别架构：探测器注册制
 
 核心扫描器**不认识任何具体生态**。它只做一件事：遍历目录 → 问每个探测器「你认领这里吗」→ 汇总成项目。
@@ -137,7 +176,7 @@ devctl logs web-a_dev_20260101090000 -f   # 跟日志
 
 | 探测器 | 认领条件 | 产出 |
 |---|---|---|
-| `maven` | `pom.xml` | run / debug / build / install |
+| `maven` | `pom.xml` | run / debug / build / install / test / clean / deps / deploy |
 | `node` | `package.json` | 按 scripts 推导 run / build |
 | `marker`（兜底·弱） | `go.mod` / `Cargo.toml` / `pyproject.toml` / `build.gradle` / compose / `*.csproj` | 只列出项目，**不猜命令** |
 | `custom` | `devctl.config.json` 的 `custom` 声明 | 任意 shell 命令 |

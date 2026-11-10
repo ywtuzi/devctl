@@ -33,9 +33,14 @@ export const DEFAULT_CONFIG = {
     // Node 项目：dev / build 的候选脚本名，按顺序取第一个存在的
     devScripts: ['dev', 'localdev', 'local'],
     buildScripts: ['build:prod', 'build:production', 'build'],
-    // Maven 项目
+    // Maven 项目：每条都是完整的 goal 列表，工程可按自己的流水线改写
     mavenBuild: ['clean', 'package', '-DskipTests'],
     mavenInstall: ['clean', 'install', '-DskipTests'],
+    mavenTest: ['test'],
+    mavenClean: ['clean'],
+    mavenDeps: ['dependency:tree'],
+    // 发布到 pom 里 <distributionManagement> 声明的私服，不可撤销
+    mavenDeploy: ['clean', 'deploy', '-DskipTests'],
   },
   overrides: {},
   // 显式声明的项目：由探测器 custom 读取，支持任何语言/工具链

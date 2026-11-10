@@ -13,7 +13,29 @@ export function probe(dir) {
   return existsSync(join(dir, 'pom.xml'))
 }
 
-export function detect(dir) {
+/** <distributionManagement> 里的发布仓库；没配就是 null */
+function readDeployRepos(xml) {
+  const block = re(xml, /<distributionManagement>([\s\S]*?)<\/distributionManagement>/)
+  if (!block) return null
+  const urlOf = (tag) => {
+    const m = block.match(new RegExp(`<${tag}>[\\s\\S]*?<url>\\s*([^<]+?)\\s*</url>`))
+    return m ? m[1].trim() : null
+  }
+  // Maven 标准写法：<repository> 收 release，<snapshotRepository> 收 SNAPSHOT
+  const releases = urlOf('repository')
+  const snapshots = urlOf('snapshotRepository')
+  return releases || snapshots ? { releases, snapshots } : null
+}
+
+function hostOf(url) {
+  try {
+    return new URL(url).host
+  } catch {
+    return String(url)
+  }
+}
+
+export function detect(dir, ctx) {
   const pom = join(dir, 'pom.xml')
   if (!existsSync(pom)) return null
   const xml = readFileSync(pom, 'utf8')
@@ -26,6 +48,10 @@ export function detect(dir) {
     null
 
   const modules = [...xml.matchAll(/<module>\s*([^<]+?)\s*<\/module>/g)].map((m) => m[1].trim())
+
+  // 本工程版本：先摘掉 <parent>（它的 <version> 是父工程版本，不是本工程的）
+  const noParent = xml.replace(/<parent>[\s\S]*?<\/parent>/g, '')
+  const version = re(noParent, /<version>\s*([^<]+?)\s*<\/version>/)
 
   // 找带 spring-boot-maven-plugin 的模块 → 可运行模块
   // 规则：pluginManagement 里的声明不算；packaging=pom 的聚合根自身不可运行
@@ -86,29 +112,52 @@ export function detect(dir) {
       encoding: 'gbk',
     }
   }
-  tasks.build = {
-    name: 'build',
-    kind: 'build',
-    type: 'mvn',
-    args: ['clean', 'package', '-DskipTests'],
-    encoding: 'gbk',
+
+  // 生命周期命令统一走 config.defaults，工程可以按自己的流水线改写
+  const d = (ctx && ctx.config && ctx.config.defaults) || {}
+  const goalArgs = (key, fallback) =>
+    Array.isArray(d[key]) && d[key].length ? [...d[key]] : [...fallback]
+
+  // section 只影响展示分组（build=构建维护 / release=对外发布），执行语义仍看 kind
+  const lifecycle = (name, args, section) => {
+    tasks[name] = {
+      name,
+      kind: 'build',
+      type: 'mvn',
+      section,
+      args,
+      encoding: 'gbk',
+    }
   }
-  tasks.install = {
-    name: 'install',
-    kind: 'build',
-    type: 'mvn',
-    args: ['clean', 'install', '-DskipTests'],
-    encoding: 'gbk',
-  }
+
+  lifecycle('build', goalArgs('mavenBuild', ['clean', 'package', '-DskipTests']), 'build')
+  lifecycle('install', goalArgs('mavenInstall', ['clean', 'install', '-DskipTests']), 'build')
+  lifecycle('test', goalArgs('mavenTest', ['test']), 'build')
+  lifecycle('clean', goalArgs('mavenClean', ['clean']), 'build')
+  lifecycle('deps', goalArgs('mavenDeps', ['dependency:tree']), 'build')
+
+  // 发布：会写到 pom 里声明的私服，属于不可撤销操作，单独分组
+  const repos = readDeployRepos(xml)
+  const snapshot = Boolean(version && /-SNAPSHOT$/i.test(version))
+  const deployUrl = repos ? (snapshot ? repos.snapshots : repos.releases) : null
+  lifecycle('deploy', goalArgs('mavenDeploy', ['clean', 'deploy', '-DskipTests']), 'release')
+  tasks.deploy.detail = deployUrl ? hostOf(deployUrl) : null
+  tasks.deploy.note = repos
+    ? deployUrl
+      ? `发布到私服 ${deployUrl}`
+      : `pom 只配了 ${snapshot ? 'releases' : 'snapshots'} 仓库，当前版本 ${version || '(未知)'} 没有匹配的发布地址`
+    : 'pom 未配置 <distributionManagement>，deploy 会因找不到发布仓库而失败'
 
   return {
     kind: 'maven',
     type: 'maven',
     packaging,
     javaVersion,
+    version,
     modules,
     runModule,
     runnable,
+    deployRepos: repos,
     tasks,
     warnings,
   }

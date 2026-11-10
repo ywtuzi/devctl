@@ -92,6 +92,70 @@ try {
   const bad = extras.find((e) => e.id === 'bad')
   assert.ok(bad.warnings.length > 0, '没有任务的条目应给出警告')
 
+  // 6) Maven：生命周期任务齐全；deploy 单独归到 release 分组并带上私服地址
+  const DIST = `  <distributionManagement>
+    <repository><id>rel</id><url>http://nexus.example.com:8182/repository/maven-releases/</url></repository>
+    <snapshotRepository><id>snap</id><url>http://nexus.example.com:8182/repository/maven-snapshots/</url></snapshotRepository>
+  </distributionManagement>`
+  const pomOf = ({ version, dist = '' }) => `<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>parent</artifactId>
+    <version>9.9.9</version>
+  </parent>
+  <groupId>com.example</groupId>
+  <artifactId>svc</artifactId>
+  <version>${version}</version>
+  <packaging>jar</packaging>
+  <build><plugins><plugin>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-maven-plugin</artifactId>
+  </plugin></plugins></build>
+${dist}
+</project>
+`
+  const mavenFacet = (rel) => detectFacets(join(root, rel), ctx).find((f) => f.kind === 'maven')
+
+  write('java-snap/pom.xml', pomOf({ version: '2.3.4-SNAPSHOT', dist: DIST }))
+  const snap = mavenFacet('java-snap')
+  assert.ok(snap, 'pom.xml 应被识别为 maven 项目')
+  for (const name of ['run', 'debug', 'build', 'install', 'test', 'clean', 'deps', 'deploy']) {
+    assert.ok(snap.tasks[name], `Maven 项目应有 ${name} 任务`)
+  }
+  assert.equal(snap.version, '2.3.4-SNAPSHOT', 'version 不能取到 <parent> 的版本')
+  assert.equal(snap.tasks.deploy.section, 'release', 'deploy 应归到发布分组')
+  assert.equal(snap.tasks.build.section, 'build')
+  assert.deepEqual(snap.tasks.deploy.args, ['clean', 'deploy', '-DskipTests'])
+  assert.deepEqual(snap.tasks.test.args, ['test'])
+  assert.equal(
+    snap.tasks.deploy.detail,
+    'nexus.example.com:8182',
+    'SNAPSHOT 版本应指向 snapshotRepository'
+  )
+  assert.ok(snap.tasks.deploy.note.includes('maven-snapshots'), 'note 应写清实际发布地址')
+
+  // release 版本走 <repository>
+  write('java-rel/pom.xml', pomOf({ version: '2.3.4', dist: DIST }))
+  const rel = mavenFacet('java-rel')
+  assert.ok(rel.tasks.deploy.note.includes('maven-releases'), 'release 版本应指向 <repository>')
+
+  // 没配 distributionManagement 时要把后果说清楚，而不是让用户点完才发现
+  write('java-nodist/pom.xml', pomOf({ version: '1.0.0' }))
+  const nodist = mavenFacet('java-nodist')
+  assert.equal(nodist.tasks.deploy.detail, null)
+  assert.ok(nodist.tasks.deploy.note.includes('distributionManagement'), '应提示未配置发布仓库')
+
+  // 命令可被 config.defaults 改写（发布流水线因工程而异）
+  const cfgDeploy = {
+    ...config,
+    defaults: { ...config.defaults, mavenDeploy: ['deploy', '-P', 'release-product'] },
+  }
+  const custom = detectFacets(join(root, 'java-rel'), { config: cfgDeploy, root }).find(
+    (f) => f.kind === 'maven'
+  )
+  assert.deepEqual(custom.tasks.deploy.args, ['deploy', '-P', 'release-product'])
+
   console.log('detectors.mjs OK')
 } finally {
   rmSync(root, { recursive: true, force: true })

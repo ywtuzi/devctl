@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // 预演入口（CLI）：解析出「将要执行的命令」但不执行。
-// 用法: node plan.js <项目ID> [任务名] --root <工作区> [--port N] [--node V]
+// 用法: node plan.js <项目ID> [任务名] --root <工作区> [--port N] [--node V] [--module <模块>]
 import { findRoot } from '../src/config.js'
 import { buildPlan } from '../src/plan.js'
 
@@ -11,9 +11,11 @@ for (let i = 0; i < argv.length; i++) {
   if (a === '--root') opts.root = argv[++i]
   else if (a === '--port') opts.port = Number(argv[++i])
   else if (a === '--node') opts.node = argv[++i]
+  else if (a === '--module') opts.module = argv[++i]
   else if (a.startsWith('--root=')) opts.root = a.slice(7)
   else if (a.startsWith('--port=')) opts.port = Number(a.slice(7))
   else if (a.startsWith('--node=')) opts.node = a.slice(7)
+  else if (a.startsWith('--module=')) opts.module = a.slice(9)
   else if (!a.startsWith('-')) opts._.push(a)
 }
 
@@ -36,6 +38,7 @@ try {
     taskName: opts._[1],
     port: opts.port,
     node: opts.node,
+    module: opts.module,
   })
   console.log(JSON.stringify(plan, null, 2))
 } catch (e) {

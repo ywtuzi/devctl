@@ -28,7 +28,15 @@
 
   "defaults": {
     "devScripts": ["dev", "localdev", "local"],
-    "buildScripts": ["build:prod", "build:production", "build"]
+    "buildScripts": ["build:prod", "build:production", "build"],
+
+    "_maven_comment": "Maven 生命周期任务，每条是完整的 goal 列表，可整体改写",
+    "mavenBuild": ["clean", "package", "-DskipTests"],
+    "mavenInstall": ["clean", "install", "-DskipTests"],
+    "mavenTest": ["test"],
+    "mavenClean": ["clean"],
+    "mavenDeps": ["dependency:tree"],
+    "mavenDeploy": ["clean", "deploy", "-DskipTests"]
   },
 
   "overrides": {

@@ -147,14 +147,18 @@ const toWire = (p) => ({
   type: p.type,
   runnable: p.runnable,
   node: p.node,
+  version: p.version || null,
+  modules: p.modules || [],
   basePort: p.basePort,
   tasks: Object.entries(p.tasks || {}).map(([k, t]) => ({
     name: k,
     kind: t.kind,
+    section: t.section || null,
     label: t.label || null,
     platform: t.platform || null,
     action: t.action || null,
     detail: t.detail || null,
+    note: t.note || null,
   })),
   warnings: p.warnings || [],
 })
@@ -382,6 +386,7 @@ export function apply(ctx, config) {
               config: loaded,
               id: body.id,
               taskName: body.task,
+              module: body.module || null,
               projects,
             })
           )
@@ -390,6 +395,7 @@ export function apply(ctx, config) {
           // 退回子进程：直接跑 bin/plan.js
           const args = [body.id]
           if (body.task) args.push(body.task)
+          if (body.module) args.push('--module', body.module)
           const data = await runCli(join(dirname(cli), 'plan.js'), root, args, 30000).catch(() => null)
           if (data) return send(res, 200, data)
           return send(res, 500, { error: String(e.message || e) })
@@ -430,6 +436,7 @@ export function apply(ctx, config) {
 
         const args = [cli, '--root', root, 'build', body.id]
         if (body.task) args.push(body.task)
+        if (body.module) args.push('--module', body.module)
         const child = spawn(process.execPath, args, {
           detached: true,
           stdio: 'ignore',

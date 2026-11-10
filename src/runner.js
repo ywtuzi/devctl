@@ -112,10 +112,32 @@ export function resolveNpmRuntime(nodeInfo) {
 }
 
 /**
+ * 只构建指定模块：把参数里已有的 -pl / -am 换掉。
+ *
+ * -am 必须去掉——它会把这个模块的上游依赖一起拉进 reactor，
+ * 于是 deploy / install 会连带作用在它们身上。这正是「只想发一个模块」时
+ * 最反直觉的地方：加了 -am 反而发得更多。
+ */
+export function withModuleArgs(args, module) {
+  const out = []
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]
+    if (a === '-pl' || a === '--projects') {
+      i++
+      continue
+    }
+    if (a === '-am' || a === '--also-make') continue
+    out.push(a)
+  }
+  out.push('-pl', module)
+  return out
+}
+
+/**
  * 把项目 task 解析成可直接 spawn 的规格
  * @returns {{cmd, args, shell, cwd, env, encoding, runtimeLabel}}
  */
-export function buildExecSpec({ project, task, config, port }) {
+export function buildExecSpec({ project, task, config, port, module }) {
   const javaInfo = resolveJava(config.toolchain.javaHome)
   const maven = resolveMaven(config.toolchain.mavenHome)
   const nodeWanted = project.node || task.node || null
@@ -137,7 +159,8 @@ export function buildExecSpec({ project, task, config, port }) {
     if (port && project.type !== 'vue-cli') args.push('--', '--port', String(port))
   } else if (task.type === 'mvn') {
     cmd = maven.cmd
-    args = [...task.args]
+    // run/debug 已经用 -pl 指定了可运行模块，不能再追加一个
+    args = module && task.kind !== 'run' ? withModuleArgs(task.args, module) : [...task.args]
     shell = true // mvn.cmd 需要 shell
     runtimeLabel = `java ${javaInfo.ok ? javaInfo.home : 'PATH'}`
     if (task.debug) {
@@ -295,7 +318,7 @@ export async function startRun({ root, project, taskName, config, portOverride, 
 
 /* ------------------------------ 构建（阻塞） ------------------------------ */
 
-export function buildTask({ root, project, taskName, config, json, onData, timeoutMs }) {
+export function buildTask({ root, project, taskName, config, json, onData, timeoutMs, module }) {
   const task = project.tasks[taskName]
   if (!task) {
     throw new Error(`项目 ${project.id} 没有任务 "${taskName}"；可用: ${Object.keys(project.tasks).join(', ')}`)
@@ -307,7 +330,7 @@ export function buildTask({ root, project, taskName, config, json, onData, timeo
   const paths = ensureState(root)
   const runId = runIdFor(project.id, taskName)
   const logPath = join(paths.logs, `${runId}.log`)
-  const spec = buildExecSpec({ project, task, config })
+  const spec = buildExecSpec({ project, task, config, module })
 
   const startedAt = Date.now()
   writeRecord(root, runId, {

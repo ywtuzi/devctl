@@ -35,7 +35,7 @@ export function extraProjects(ctx) {
       }
       const kind =
         raw.kind ||
-        (/build|package|dist/i.test(name)
+        (/build|package|dist|release|deploy|install/i.test(name)
           ? 'build'
           : /^(dev|run|start|serve)/i.test(name)
             ? 'run'
@@ -46,6 +46,8 @@ export function extraProjects(ctx) {
         type: 'shell',
         command,
         label: raw.label || name,
+        section: raw.section || null,
+        note: raw.note || null,
         encoding: raw.encoding || 'utf8',
         cwd: raw.cwd || null,
       }

@@ -86,7 +86,7 @@ function applyOverrides(project, override) {
       if (!command) continue
       const kind =
         raw.kind ||
-        (/build|package|dist|release/i.test(key)
+        (/build|package|dist|release|deploy|install/i.test(key)
           ? 'build'
           : /^(dev|run|start|serve)/i.test(key)
             ? 'run'
@@ -97,6 +97,9 @@ function applyOverrides(project, override) {
         type: 'shell',
         command,
         label: raw.label || null,
+        // section 只影响面板里的分组：release 会单独列在「发布」里
+        section: raw.section || null,
+        note: raw.note || null,
         encoding: raw.encoding || 'utf8',
         cwd: raw.cwd || null,
       }
@@ -175,6 +178,8 @@ export function scanDetailed(root, config) {
       runnable,
       node: nodeFacet?.node || null,
       legacy: Boolean(nodeFacet?.legacy),
+      version: mavenFacet?.version || null,
+      modules: mavenFacet?.modules || [],
       basePort: nodeFacet?.port ?? null,
       warnings,
     }

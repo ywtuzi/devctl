@@ -45,15 +45,43 @@ window.__ModuleLoader__.load({
     const GROUPS = ['frontend', 'backend', 'fullstack', 'tool']
 
     const PLATFORM_ORDER = ['h5', 'mp-weixin', 'mp-alipay', 'mp-baidu', 'mp-qq', 'mp-toutiao', 'mp-lark', 'mp-kuaishou', 'mp-jd', 'mp-xhs', 'mp-harmony', 'quickapp-webview', 'custom']
+    // 多 facet 项目的任务名形如 node:dev / maven:build，第一段是 facet 不是平台
+    const FACET_PREFIXES = new Set(['node', 'maven', 'marker', 'custom'])
     const platformOf = (name) => {
       const parts = String(name).split(':')
-      return parts.length > 1 ? parts[1] : null
+      if (parts.length < 2) return null
+      if (FACET_PREFIXES.has(parts[0])) return null
+      return parts[1]
     }
     const fmt = (s) => (s >= 60 ? `${Math.floor(s / 60)}m${s % 60}s` : `${s}s`)
+
+    // chip 的外观直接复用行内按钮的 styles.btn（细边框 + 6px 圆角），
+    // 这里只补 :hover / :disabled / 选中态——伪类没法写进内联样式。
+    // 用 !important 是因为底子来自内联 style，优先级比类选择器高；
+    // 好处是万一 <style> 被 CSP 拦掉，细边框仍然在，只是没有悬停效果。
+    const CHIP_CSS = `
+.devctl-chip { outline: none; }
+.devctl-chip:hover { border-color: var(--dsw-alias-brand-primary) !important; }
+.devctl-chip:disabled { opacity: .5; cursor: default; }
+.devctl-chip:disabled:hover { border-color: var(--dsw-alias-border-l2) !important; }
+.devctl-chip.is-release {
+  border-color: var(--dsw-alias-state-warn-primary) !important;
+  color: var(--dsw-alias-state-warn-primary) !important;
+}
+.devctl-chip.is-selected { border-color: var(--dsw-alias-brand-primary) !important; }
+`
+    function ensureChipCss() {
+      if (typeof document === 'undefined' || document.getElementById('devctl-chip-css')) return
+      const el = document.createElement('style')
+      el.id = 'devctl-chip-css'
+      el.textContent = CHIP_CSS
+      document.head.appendChild(el)
+    }
 
     return {
       inject: ['slots', 'locale'],
       apply(ctx) {
+        ensureChipCss()
         ctx.locale.register('devctl', 'zh', {
           title: '项目运行器', subtitle: '状态面板 · 执行前确认',
           run: '运行', build: '打包', stop: '停止', refresh: '刷新',
@@ -92,6 +120,18 @@ window.__ModuleLoader__.load({
           'task.build': '打包',
           'task.install': '安装',
           'task.dev': '启动',
+          'task.test': '测试',
+          'task.clean': '清理',
+          'task.deps': '依赖树',
+          'task.deploy': '发布',
+          'section.build': '构建与维护',
+          'section.release': '发布（写入私服）',
+          confirmRelease: '确认发布到私服？',
+          confirmReleaseHint: '这条命令会把产物上传到 Maven 私服，无法撤销',
+          version: '版本',
+          module: '模块',
+          allModules: '全部模块',
+          moduleHint: '多模块仓可只处理其中一个',
           idle: '未运行',
         })
         ctx.locale.register('devctl', 'en', {
@@ -132,6 +172,18 @@ window.__ModuleLoader__.load({
           'task.build': 'Build',
           'task.install': 'Install',
           'task.dev': 'Dev',
+          'task.test': 'Test',
+          'task.clean': 'Clean',
+          'task.deps': 'Dependencies',
+          'task.deploy': 'Deploy',
+          'section.build': 'Build & maintain',
+          'section.release': 'Deploy (publishes)',
+          confirmRelease: 'Publish to the repository?',
+          confirmReleaseHint: 'This uploads artifacts to the Maven repository and cannot be undone',
+          version: 'Version',
+          module: 'Module',
+          allModules: 'All modules',
+          moduleHint: 'Limit to a single module of a multi-module repo',
           idle: 'Not running',
         })
         const t = ctx.locale.bind('devctl')
@@ -253,13 +305,42 @@ window.__ModuleLoader__.load({
 
           const requestAction = async (project, task, mode) => {
             setNotice(null)
-            setConfirm({ mode, project, task, plan: null, loading: true, error: null })
+            setConfirm({ mode, project, task, plan: null, loading: true, error: null, module: null, pendingModule: null })
             try {
               const plan = await post('/preview', { id: project.id, task: task.name })
               setConfirm((c) => (c ? { ...c, plan, loading: false } : c))
             } catch (e) {
               setConfirm((c) => (c ? { ...c, loading: false, error: e.message } : c))
             }
+          }
+
+          // 多模块仓：切到「只处理某一个模块」。重算命令但不关掉弹层，
+          // 用 pendingModule 丢弃迟到的旧响应，避免连点时命令和选中项对不上。
+          const pickModule = async (m) => {
+            const cur = confirm
+            if (!cur) return
+            setConfirm((c) => (c ? { ...c, module: m, pendingModule: m, loading: true, error: null } : c))
+            try {
+              const plan = await post('/preview', {
+                id: cur.project.id,
+                task: cur.task.name,
+                module: m || undefined,
+              })
+              setConfirm((c) =>
+                c && c.pendingModule === m ? { ...c, plan, loading: false } : c
+              )
+            } catch (e) {
+              setConfirm((c) =>
+                c && c.pendingModule === m ? { ...c, loading: false, error: e.message } : c
+              )
+            }
+          }
+
+          // 任务名 → 展示用动词（发布 / 清理 / 测试 …），不依赖后文定义的 taskText
+          const verbOf = (tk) => {
+            const key = `task.${bareName(tk.name)}`
+            const v = t(key)
+            return v === key ? tk.label || tk.name : v
           }
 
           const executeConfirmed = async () => {
@@ -272,9 +353,12 @@ window.__ModuleLoader__.load({
                 const r = await post('/run', { id: project.id, task: task.name })
                 return `${project.id} · ${task.name} → ${r.url || 'started'}`
               }
-              const r = await post('/build', { id: project.id, task: task.name })
-              if (r && r.busy) return `${project.id} 已在打包中（${r.runId}）`
-              return `${project.id} · ${task.name} 开始打包`
+              const body = { id: project.id, task: task.name }
+              if (cur.module) body.module = cur.module
+              const r = await post('/build', body)
+              if (r && r.busy) return `${project.id} 已在执行中（${r.runId}）`
+              const scope = cur.module ? ` (${cur.module})` : ''
+              return `${project.id} · ${verbOf(task)}${scope} 已开始`
             })
           }
 
@@ -309,10 +393,13 @@ window.__ModuleLoader__.load({
             buildingByProject[b.projectId].push(b)
           }
 
+          // 「上次打包」徽标只认产出产物的任务：清理/测试/依赖树/发布/安装都不算打包
+          const NOT_A_PACKAGE = new Set(['install', 'test', 'clean', 'deps', 'deploy'])
+          const bareName = (name) => String(name).split(':').pop()
           const lastBuild = {}
           for (const r of recent) {
             if (lastBuild[r.projectId]) continue
-            if (r.task === 'install') continue
+            if (NOT_A_PACKAGE.has(bareName(r.task))) continue
             const def = (projects.find((p) => p.id === r.projectId)?.tasks || []).find((x) => x.name === r.task)
             if (def && def.kind === 'build') lastBuild[r.projectId] = r
           }
@@ -389,13 +476,7 @@ window.__ModuleLoader__.load({
               background: 'var(--dsw-alias-bg-layer-1)', borderTop: '1px solid var(--dsw-alias-border-l1)',
               borderBottom: '1px solid var(--dsw-alias-border-l1)',
             },
-            chips: { display: 'flex', flexWrap: 'wrap', gap: 4 },
-            chip: {
-              border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent',
-              color: 'var(--dsw-alias-label-primary)', borderRadius: 999, padding: '2px 9px',
-              fontSize: 11, cursor: 'pointer',
-            },
-            chipRun: { borderColor: 'var(--dsw-alias-brand-primary)' },
+            chips: { display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' },
             taskGroupLabel: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', marginTop: 2 },
             overlay: {
               position: 'absolute', inset: 0, background: 'var(--dsw-alias-bg-overlay)',
@@ -431,6 +512,9 @@ window.__ModuleLoader__.load({
             },
           }
 
+          // 选项 chip：单选，只有当前选中项描边
+          const selChip = (on) => (on ? 'devctl-chip is-selected' : 'devctl-chip')
+
           const kv = (k, v) =>
             v == null || v === ''
               ? null
@@ -455,20 +539,47 @@ window.__ModuleLoader__.load({
 
           const renderConfirm = () => {
             const { mode, project, task, plan, loading: planLoading, error: planError } = confirm
+            const isRelease = task.section === 'release'
             return h('div', { style: styles.overlay },
-              h('div', { style: styles.confirmTitle }, mode === 'run' ? t('confirmRun') : t('confirmBuild')),
-              h('div', { style: { ...styles.meta, marginBottom: 8 } }, t('confirmHint')),
+              h('div', { style: styles.confirmTitle },
+                isRelease ? t('confirmRelease') : mode === 'run' ? t('confirmRun') : t('confirmBuild')),
+              h('div', {
+                style: { ...styles.meta, marginBottom: 8, ...(isRelease ? { color: 'var(--dsw-alias-state-warn-primary)' } : {}) },
+              }, isRelease ? t('confirmReleaseHint') : t('confirmHint')),
               kv(t('project'), project.id),
+              kv(t('version'), plan ? plan.version : null),
               kv(t('task'), `${taskText(task)}  (${task.name})`),
-              planLoading
+              planLoading && !plan
                 ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 } },
                     h('div', { style: { ...styles.skelBar, width: '70%' } }),
                     h('div', { style: { ...styles.skelBar, width: '90%' } }),
                     h('div', { style: { ...styles.skelBar, width: '45%' } }))
                 : null,
               planError ? h('div', { style: { color: 'var(--dsw-alias-state-error-primary)', marginTop: 6 } }, planError) : null,
+              plan && plan.note
+                ? h('div', { style: { color: 'var(--dsw-alias-state-warn-primary)', margin: '6px 0' } }, `! ${plan.note}`)
+                : null,
               plan
                 ? h('div', null,
+                    plan.modules && plan.modules.length && task.kind !== 'run'
+                      ? h('div', { style: { marginTop: 8 } },
+                          h('div', { style: styles.cmdLabel },
+                            `${t('module')} · ${plan.module || t('allModules')} (${plan.modules.length})`),
+                          h('div', { style: styles.chips },
+                            h('button', {
+                              key: '__all',
+                              className: selChip(!plan.module),
+                              style: styles.btn,
+                              onClick: () => pickModule(null),
+                            }, t('allModules')),
+                            plan.modules.map((m) =>
+                              h('button', {
+                                key: m,
+                                className: selChip(plan.module === m),
+                                style: styles.btn,
+                                onClick: () => pickModule(m),
+                              }, m))))
+                      : null,
                     kv(t('cwd'), plan.cwd),
                     kv(t('runtime'), plan.type === 'mvn' ? `java ${plan.javaHome || ''}` : plan.type === 'shell' ? 'shell' : `node ${plan.nodeVersion}`),
                     kv(t('port'), plan.port ? `${plan.port}  ${plan.url || ''}` : null),
@@ -582,9 +693,9 @@ window.__ModuleLoader__.load({
               const isBuild = (tk.action || (tk.kind === 'build' ? 'build' : 'dev')) === 'build'
               return `${plat} · ${isBuild ? t('build') : t('run')}`
             }
-            // 按任务名查文案：run / debug / build / install / dev
+            // 按任务名查文案：run / debug / build / install / test / deploy …
             // （debug 的 kind 也是 run，只看 kind 会和 run 撞成同一个名字）
-            const nameKey = `task.${tk.name}`
+            const nameKey = `task.${String(tk.name).split(':').pop()}`
             const byName = t(nameKey)
             const base = byName === nameKey ? null : byName
             if (base) return tk.detail ? `${base} (${tk.detail})` : base
@@ -596,9 +707,10 @@ window.__ModuleLoader__.load({
           const chip = (p, tk, kind) =>
             h('button', {
               key: `${kind}-${tk.name}`,
-              style: kind === 'run' ? { ...styles.chip, ...styles.chipRun } : styles.chip,
+              className: tk.section === 'release' ? 'devctl-chip is-release' : 'devctl-chip',
+              style: styles.btn,
               disabled: busy === p.id,
-              title: tk.name,
+              title: [tk.name, tk.note].filter(Boolean).join('\n'),
               onClick: () => requestAction(p, tk, kind),
             }, taskText(tk))
 
@@ -712,14 +824,20 @@ window.__ModuleLoader__.load({
               if (isOpen) {
                 const grp = taskGroups([...runTasks, ...buildTasks])
                 const kindOf = (tk) => (tk.kind === 'run' ? 'run' : 'build')
+                // 发布类任务单独一组：它会把产物写到私服，和普通打包风险级别不同
+                const relTasks = buildTasks.filter((x) => x.section === 'release')
+                const mntTasks = buildTasks.filter((x) => x.section !== 'release')
+                const buildLabel = relTasks.length ? t('section.build') : t('build')
                 rows.push(
                   h('div', { key: `${p.id}-tasks`, style: styles.taskBox },
                     grp.plain
                       ? [
                           runTasks.length ? h('div', { key: 'r', style: styles.taskGroupLabel }, `${t('run')} (${runTasks.length})`) : null,
                           runTasks.length ? h('div', { key: 'rc', style: styles.chips }, runTasks.map((tk) => chip(p, tk, 'run'))) : null,
-                          buildTasks.length ? h('div', { key: 'b', style: styles.taskGroupLabel }, `${t('build')} (${buildTasks.length})`) : null,
-                          buildTasks.length ? h('div', { key: 'bc', style: styles.chips }, buildTasks.map((tk) => chip(p, tk, 'build'))) : null,
+                          mntTasks.length ? h('div', { key: 'b', style: styles.taskGroupLabel }, `${buildLabel} (${mntTasks.length})`) : null,
+                          mntTasks.length ? h('div', { key: 'bc', style: styles.chips }, mntTasks.map((tk) => chip(p, tk, 'build'))) : null,
+                          relTasks.length ? h('div', { key: 'd', style: styles.taskGroupLabel }, `${t('section.release')} (${relTasks.length})`) : null,
+                          relTasks.length ? h('div', { key: 'dc', style: styles.chips }, relTasks.map((tk) => chip(p, tk, 'build'))) : null,
                         ]
                       : grp.platforms.map(({ plat, tasks }) =>
                           h('div', { key: plat },
