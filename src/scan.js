@@ -1,12 +1,13 @@
-// 工作区扫描：识别项目、合并 overrides、应用剔除/选入偏好、端口冲突检查
+// 工作区扫描：目录遍历 → 探测器注册表 → 项目列表
+// 本文件不认识任何具体生态：认得什么项目由 src/detectors/ 决定。
 import { existsSync, readdirSync } from 'node:fs'
 import { join, relative, resolve as resolvePath } from 'node:path'
 import { matchExcludedBy } from './util.js'
-import { detectFacets, hasBuildFile } from './parse.js'
+import { detectFacets, hasBuildFile, hasStrongBuildFile, collectExtraProjects } from './detectors/index.js'
 
 /**
  * 扫描一个根目录。
- * 规则：目录内若已有 pom.xml / package.json，即视为项目，**不再向下递归**
+ * 规则：目录内若已有探测器认领的构建文件，即视为项目，**不再向下递归**
  *      （避免把 Maven 子模块识别成独立项目）。
  * 剔除来源有两层：config.exclude（手写基线）与 prefs（交互式），
  * prefs.included 可以覆盖两者。
@@ -20,6 +21,7 @@ function walk(root, relDir, depth, config, ctx) {
   } catch {
     return
   }
+  const dctx = { config, root }
 
   for (const entry of entries) {
     if (!entry.isDirectory()) continue
@@ -35,7 +37,7 @@ function walk(root, relDir, depth, config, ctx) {
     if (skipped) {
       // 被剔除的目录如果本身就是个项目，记录到「已剔除」里供 UI 选回。
       // 但基础设施类排除（裸名 / 通配，如 node_modules、devctl）不提示选入。
-      if (hasBuildFile(abs)) {
+      if (hasBuildFile(abs, dctx)) {
         const suggestible = byPrefs || Boolean(configMatch && configMatch.includes('/'))
         if (suggestible) {
           ctx.skipped.push({ id: posix, reason: byPrefs ? 'user' : 'config', pattern: configMatch || null })
@@ -44,10 +46,12 @@ function walk(root, relDir, depth, config, ctx) {
       continue
     }
 
-    if (hasBuildFile(abs)) {
-      // 视为项目，不递归
-      ctx.out.push({ absPath: abs, relPath: posix })
-    } else if (depth < config.maxDepth) {
+    const isProject = hasBuildFile(abs, dctx)
+    if (isProject) ctx.out.push({ absPath: abs, relPath: posix })
+    // 强探测器命中 → 目录独占，不再向下（避免把 Maven 子模块当独立项目）；
+    // 弱探测器（仅标记文件）→ 继续向下找嵌套项目。
+    const claimsDir = isProject && hasStrongBuildFile(abs, dctx)
+    if (!claimsDir && depth < config.maxDepth) {
       walk(root, posix, depth + 1, config, ctx)
     }
   }
@@ -71,6 +75,34 @@ function applyOverrides(project, override) {
   if (override.env) project.env = { ...(project.env || {}), ...override.env }
   if (override.installOnly) project.installOnly = true
   if (override.tasks) project.taskLabels = override.tasks
+
+  // extraTasks：在自动识别的任务之上追加项目特有的任务（例如生产发布包）。
+  // 命令走 shell，因此可以表达任何项目自有的发布流程，无需改探测器。
+  if (override.extraTasks && typeof override.extraTasks === 'object') {
+    for (const [key, def] of Object.entries(override.extraTasks)) {
+      if (!def) continue
+      const raw = typeof def === 'string' ? { command: def } : def
+      const command = raw.command || raw.cmd
+      if (!command) continue
+      const kind =
+        raw.kind ||
+        (/build|package|dist|release/i.test(key)
+          ? 'build'
+          : /^(dev|run|start|serve)/i.test(key)
+            ? 'run'
+            : 'other')
+      project.tasks[key] = {
+        name: key,
+        kind,
+        type: 'shell',
+        command,
+        label: raw.label || null,
+        encoding: raw.encoding || 'utf8',
+        cwd: raw.cwd || null,
+      }
+    }
+    project.runnable = Object.values(project.tasks).some((t) => t.kind === 'run')
+  }
   return project
 }
 
@@ -105,7 +137,7 @@ export function scanDetailed(root, config) {
 
   const projects = []
   for (const cand of ctx.out) {
-    const facets = detectFacets(cand.absPath, config)
+    const facets = detectFacets(cand.absPath, { config, root })
     if (!facets.length) continue
 
     const hasMaven = facets.some((f) => f.kind === 'maven')
@@ -129,14 +161,15 @@ export function scanDetailed(root, config) {
     const runnable = facets.some((f) => f.runnable)
     const nodeFacet = facets.find((f) => f.kind === 'node')
     const mavenFacet = facets.find((f) => f.kind === 'maven')
+    const markerFacet = facets.find((f) => f.kind === 'marker')
 
     const project = {
       id: cand.relPath,
       displayName: nodeFacet?.name && !hasMaven ? nodeFacet.name : cand.relPath,
       packageName: nodeFacet?.name || null,
       absPath: cand.absPath,
-      kind: multi ? 'mixed' : hasMaven ? 'maven' : 'node',
-      type: nodeFacet?.type || (mavenFacet ? 'maven' : 'unknown'),
+      kind: multi ? 'mixed' : hasMaven ? 'maven' : hasNode ? 'node' : 'other',
+      type: nodeFacet?.type || (mavenFacet ? 'maven' : markerFacet?.type || 'unknown'),
       facets,
       tasks,
       runnable,
@@ -156,6 +189,17 @@ export function scanDetailed(root, config) {
       }
     }
     projects.push(project)
+  }
+
+  // 探测器贡献的额外项目（目前是 config.custom；未来可以是 compose 服务等）。
+  // 同 ID 时以探测器的声明为准，覆盖目录扫描结果。
+  const extras = collectExtraProjects({ config, root })
+  if (extras.length) {
+    const extraIds = new Set(extras.map((p) => p.id))
+    for (let i = projects.length - 1; i >= 0; i--) {
+      if (extraIds.has(projects[i].id)) projects.splice(i, 1)
+    }
+    projects.push(...extras)
   }
 
   // 端口冲突检查

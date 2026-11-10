@@ -47,8 +47,45 @@
     "vendor/some-nested-repo": {
       "runnable": false,
       "installOnly": true
+    },
+
+    "my-backend": {
+      "extraTasks": {
+        "package:dev": {
+          "label": "测试包",
+          "kind": "build",
+          "command": "mvn clean package -P release-dev -pl my-distribution -am -DskipTests"
+        },
+        "package:product": {
+          "label": "生产包",
+          "kind": "build",
+          "command": "mvn clean package -P release-product -pl my-distribution -am -DskipTests"
+        }
+      }
     }
   },
+
+  "custom": [
+    {
+      "id": "py-api",
+      "dir": "services/py-api",
+      "type": "python",
+      "basePort": 8000,
+      "tasks": {
+        "dev": "uvicorn app.main:app --reload --port 8000",
+        "build": "python -m build"
+      }
+    },
+    {
+      "id": "go-worker",
+      "dir": "services/go-worker",
+      "type": "go",
+      "tasks": {
+        "run": "go run ./cmd/worker",
+        "build": "go build -o bin/worker ./cmd/worker"
+      }
+    }
+  ],
 
   "debug": {
     "port": 5005

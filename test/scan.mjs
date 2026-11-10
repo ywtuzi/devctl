@@ -54,6 +54,14 @@ try {
   write('mixed/pom.xml', `<project><packaging>jar</packaging><build><plugins>${SB_PLUGIN}</plugins></build></project>`)
   write('mixed/package.json', JSON.stringify({ name: 'mixed', scripts: { dev: 'vite' } }))
 
+  // 7) 弱探测器（go.mod）不独占目录，仍应找到嵌套项目
+  write('weak-parent/go.mod', 'module example.com/x\n')
+  write('weak-parent/web/package.json', JSON.stringify({ name: 'web', scripts: { dev: 'vite' } }))
+
+  // 8) 强探测器（pom.xml）独占目录，不再向下递归
+  write('strong-parent/pom.xml', `<project><packaging>jar</packaging></project>`)
+  write('strong-parent/child/package.json', JSON.stringify({ name: 'child', scripts: { dev: 'vite' } }))
+
   const base = loadConfig(root)
   const config = {
     ...base,
@@ -104,6 +112,12 @@ try {
   assert.ok(Object.keys(mx.tasks).some((k) => k.startsWith('maven:')))
   assert.ok(Object.keys(mx.tasks).some((k) => k.startsWith('node:')))
 
+  // —— 递归边界：弱探测器不独占，强探测器独占 ——
+  assert.ok(byId['weak-parent'], '弱标记（go.mod）项目本身应被列出')
+  assert.ok(byId['weak-parent/web'], '弱标记目录下的嵌套项目应被找到')
+  assert.ok(byId['strong-parent'], 'Maven 项目应被列出')
+  assert.equal(byId['strong-parent/child'], undefined, '强探测器目录不应继续向下递归')
+
   // —— 剔除 / 选入 ——
   savePrefs(root, { excluded: ['frontend'], included: [] })
   const afterExclude = scanDetailed(root, { ...config, prefs: { excluded: ['frontend'], included: [] } })
@@ -115,6 +129,28 @@ try {
 
   const afterInclude = scanDetailed(root, { ...config, prefs: { excluded: [], included: ['frontend'] } })
   assert.ok(afterInclude.projects.some((p) => p.id === 'frontend'), '选入后应回到列表')
+
+  // —— extraTasks：在自动识别之上追加项目特有任务，原有任务保留 ——
+  const withExtra = scanDetailed(root, {
+    ...config,
+    overrides: {
+      backend: {
+        extraTasks: {
+          'package:product': {
+            command: 'mvn clean package -P release-product -pl my-dist -am',
+            label: '生产包',
+          },
+        },
+      },
+    },
+  })
+  const be2 = withExtra.projects.find((p) => p.id === 'backend')
+  assert.ok(be2.tasks['package:product'], '应追加 extraTasks')
+  assert.equal(be2.tasks['package:product'].kind, 'build', 'package 应推断为 build')
+  assert.equal(be2.tasks['package:product'].type, 'shell')
+  assert.equal(be2.tasks['package:product'].label, '生产包')
+  assert.ok(be2.tasks.run, '原有 run 任务应保留')
+  assert.ok(be2.tasks.debug, '原有 debug 任务应保留')
 
   console.log('scan.mjs OK')
 } finally {

@@ -148,6 +148,12 @@ export function buildExecSpec({ project, task, config, port }) {
         `-Dspring-boot.run.jvmArguments=-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=${dp}`
       )
     }
+  } else if (task.type === 'shell') {
+    // 自定义项目：整条命令交给 shell 解释
+    cmd = task.command
+    args = []
+    shell = true
+    runtimeLabel = 'shell'
   } else {
     throw new Error(`未知任务类型: ${task.type}`)
   }
@@ -175,11 +181,14 @@ export function buildExecSpec({ project, task, config, port }) {
 
   if (port && project.type === 'vue-cli') env.PORT = String(port)
 
+  // 自定义任务可以指定子目录（相对项目根）
+  const workdir = task.cwd ? join(project.absPath, task.cwd) : project.absPath
+
   return {
     cmd,
     args,
     shell,
-    cwd: project.absPath,
+    cwd: workdir,
     env,
     encoding: task.encoding || 'utf8',
     runtimeLabel,

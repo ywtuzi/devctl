@@ -38,6 +38,10 @@ export const DEFAULT_CONFIG = {
     mavenInstall: ['clean', 'install', '-DskipTests'],
   },
   overrides: {},
+  // 显式声明的项目：由探测器 custom 读取，支持任何语言/工具链
+  custom: [],
+  // 后端调试（JDWP）默认端口
+  debug: { port: 5005 },
   limits: {
     maxConcurrentBuilds: 2,
     logTailLines: 200,
