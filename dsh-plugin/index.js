@@ -149,6 +149,7 @@ const toWire = (p) => ({
   node: p.node,
   version: p.version || null,
   modules: p.modules || [],
+  profiles: p.profiles || [],
   basePort: p.basePort,
   tasks: Object.entries(p.tasks || {}).map(([k, t]) => ({
     name: k,
@@ -387,6 +388,7 @@ export function apply(ctx, config) {
               id: body.id,
               taskName: body.task,
               module: body.module || null,
+              profile: body.profile || null,
               projects,
             })
           )
@@ -396,6 +398,7 @@ export function apply(ctx, config) {
           const args = [body.id]
           if (body.task) args.push(body.task)
           if (body.module) args.push('--module', body.module)
+          if (body.profile) args.push('--profile', body.profile)
           const data = await runCli(join(dirname(cli), 'plan.js'), root, args, 30000).catch(() => null)
           if (data) return send(res, 200, data)
           return send(res, 500, { error: String(e.message || e) })
@@ -437,6 +440,7 @@ export function apply(ctx, config) {
         const args = [cli, '--root', root, 'build', body.id]
         if (body.task) args.push(body.task)
         if (body.module) args.push('--module', body.module)
+        if (body.profile) args.push('--profile', body.profile)
         const child = spawn(process.execPath, args, {
           detached: true,
           stdio: 'ignore',

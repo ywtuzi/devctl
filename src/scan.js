@@ -180,6 +180,7 @@ export function scanDetailed(root, config) {
       legacy: Boolean(nodeFacet?.legacy),
       version: mavenFacet?.version || null,
       modules: mavenFacet?.modules || [],
+      profiles: mavenFacet?.profiles || [],
       basePort: nodeFacet?.port ?? null,
       warnings,
     }

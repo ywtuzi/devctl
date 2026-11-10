@@ -2,15 +2,24 @@
 // 独立成模块，供 CLI（bin/plan.js）与 DSH 宿主（面板二次确认）共用同一份逻辑。
 import { loadConfig } from './config.js'
 import { scanDetailed } from './scan.js'
-import { buildExecSpec, withModuleArgs } from './runner.js'
+import { buildExecSpec, withModuleArgs, withProfileArgs } from './runner.js'
 import { findFreePort, isPortFree } from './ports.js'
 
-function displayOf(project, task, port, module) {
+// 「环境类」profile：release-product / release-dev / release-local …
+// gen-mappers 这类代码生成 profile 也是合法 profile，但不是环境，
+// 混进环境选择器只会被误点，所以只把环境类的交给 UI 展示。
+const ENV_PROFILE_RE = /^(release|prod|product|dev|develop|test|local|stage|uat|sit|pre|online)/i
+
+function displayOf(project, task, port, module, profile) {
   if (task.type === 'npm') {
     return `npm run ${task.script}${port && project.type !== 'vue-cli' ? ` -- --port ${port}` : ''}`
   }
   if (task.type === 'shell') return task.command
-  const mvnArgs = module && task.kind !== 'run' ? withModuleArgs(task.args, module) : task.args
+  let mvnArgs = [...task.args]
+  if (task.kind !== 'run') {
+    if (profile) mvnArgs = withProfileArgs(mvnArgs, profile)
+    if (module) mvnArgs = withModuleArgs(mvnArgs, module)
+  }
   return `mvn ${mvnArgs.join(' ')}`
 }
 
@@ -23,10 +32,11 @@ function displayOf(project, task, port, module) {
  * @param {number} [opts.port]        指定端口
  * @param {string} [opts.node]        临时指定 Node 版本
  * @param {string} [opts.module]      只构建/发布这个 Maven 模块（省略则整个 reactor）
+ * @param {string} [opts.profile]     激活的 Maven profile（正式包/测试包等）
  * @param {Array}  [opts.projects]    复用已扫描好的项目列表（避免重复扫描）
  */
 export async function buildPlan(opts) {
-  const { root, id, taskName, port, node, projects, module } = opts
+  const { root, id, taskName, port, node, projects, module, profile } = opts
   const config = opts.config || loadConfig(root)
 
   const list = projects || scanDetailed(root, config).projects
@@ -60,15 +70,34 @@ export async function buildPlan(opts) {
     chosenModule = module
   }
 
-  const spec = buildExecSpec({ project, task, config, port: chosenPort, module: chosenModule })
+  // 环境：-P 只能选 pom 里声明过的 profile，拼错会让整条命令白跑
+  const profiles = project.profiles || []
+  let chosenProfile = null
+  if (profile) {
+    if (!profiles.includes(profile)) {
+      throw new Error(`项目 "${id}" 没有 profile "${profile}"；可用: ${profiles.join(', ') || '(无)'}`)
+    }
+    chosenProfile = profile
+  }
+
+  const spec = buildExecSpec({
+    project,
+    task,
+    config,
+    port: chosenPort,
+    module: chosenModule,
+    profile: chosenProfile,
+  })
   const warnings = [...(project.warnings || []), ...(spec.warnings || [])]
 
-  // 单模块时把范围写进提示：多模块仓最容易误解成「只发这一个」
-  const note = chosenModule
-    ? `${task.section === 'release' ? '只发布' : '只构建'} ${chosenModule}（同仓其它模块不动）${
-        task.note ? `；${task.note}` : ''
-      }`
-    : task.note || null
+  // 范围与环境都写进提示：多模块仓最容易误解成「只发这一个」
+  const parts = []
+  if (chosenModule) {
+    parts.push(`${task.section === 'release' ? '只发布' : '只构建'} ${chosenModule}（同仓其它模块不动）`)
+  }
+  if (chosenProfile) parts.push(`激活 profile ${chosenProfile}`)
+  if (task.note) parts.push(task.note)
+  const note = parts.length ? parts.join('；') : null
 
   let debugPort = null
   if (task.debug) {
@@ -90,10 +119,14 @@ export async function buildPlan(opts) {
     // 多模块仓：让调用方能在「全部模块 / 单个模块」之间选
     modules,
     module: chosenModule,
+    // 环境：pom 里声明的 profile 列表 + 当前选中的那个
+    profiles,
+    envProfiles: profiles.filter((p) => ENV_PROFILE_RE.test(p)),
+    profile: chosenProfile,
     type: task.type,
     debug: Boolean(task.debug),
     debugPort,
-    display: displayOf(project, task, chosenPort, chosenModule),
+    display: displayOf(project, task, chosenPort, chosenModule, chosenProfile),
     cmd: spec.cmd,
     args: spec.args,
     cwd: spec.cwd,

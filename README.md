@@ -118,11 +118,13 @@ devctl logs web-a_dev_20260101090000 -f   # 跟日志
     "my-api-service": {
       "debugPort": 5005,
       // 项目特有的发布流程：在自动识别的任务之上追加，不用改代码
+      // 注意：单纯「换环境打包」不需要它——用面板里的「环境」或 --profile 即可，
+      // extraTasks 留给 mvn 表达不了的流程（脚本、多命令串联等）
       "extraTasks": {
-        "package:product": {
-          "label": "生产包",
+        "release:tar": {
+          "label": "出 tar 包",
           "kind": "build",
-          "command": "mvn clean package -P release-product -pl my-distribution -am -DskipTests"
+          "command": "bash package-product.sh"
         }
       }
     }
@@ -167,6 +169,46 @@ devctl logs web-a_dev_20260101090000 -f   # 跟日志
 
 注意**不要**自己补 `-am`：它会把该模块的上游一起拉进 reactor，于是 deploy/install
 连带作用在它们身上——和「只发一个」正好相反。devctl 指定模块时会主动摘掉 `-am`。
+
+### 环境（`-P`）
+
+正式包 / 测试包靠 Maven profile 区分。面板确认框里的「环境」一栏列出 pom 里声明过的
+profile（根 pom 和所有子模块的都算），点一下就重算命令：
+
+```bash
+devctl build hs-cloud-auth build --profile release-product
+# → mvn clean package -DskipTests -P release-product
+```
+
+profile 清单来自根 pom **和所有子模块**（`release-dev` / `release-product` 常常只声明在
+distribution 子模块里）。环境选择器只列「环境类」的（`release-*` / `*-dev` / `*-product` /
+`prod` / `test` / `local` …），`gen-mappers` 这种代码生成 profile 不会混进来；CLI 的
+`--profile` 仍然接受 pom 里声明的任何 profile。
+
+和「模块」叠加时 `-am` 的规则不一样，因为两件事的目标相反：
+
+| 命令 | 生成参数 | 原因 |
+|---|---|---|
+| 打包 | `-pl X -am` | distribution 要打包兄弟模块的 jar，没有 `-am` 只会打出一个缺料的包 |
+| 发布 | `-pl X`（去掉 `-am`） | `-am` 会把上游拉进 reactor，deploy 连带把它们发上去 |
+
+所以「测试包 / 生产包」不用再写成 `extraTasks`，两个选择器就够了：
+
+```
+模块 = hs-cloud-mt-distribution，环境 = release-product
+→ mvn clean package -DskipTests -P release-product -pl hs-cloud-mt-distribution -am
+```
+
+**不选环境不会报错，但产物往往不是你要的那个。** 以 `hs-cloud-auth` 为例：
+
+| 省略了什么 | 后果 |
+|---|---|
+| `-P release-dev` / `-P release-product` | `cloud-auth-distribution` 的 assembly 插件只声明在这两个 profile 里，不激活就没有 `tar.gz`、没有 `bin/`、没有 `conf/` |
+| `-P release-local` | `cloud-auth-admin` 的 `spring-boot-maven-plugin`（repackage + mainClass）只在 `release-local` 里启用，不激活就只有普通 jar，没有可执行的 `-exec.jar` |
+
+所以「不带 `-P` 的打包」看起来 BUILD SUCCESS，实际产不出一套能部署的东西。
+devctl 不去猜该用哪个环境——猜错就是把测试配置发到生产，代价比多点一次大得多。
+
 
 ## 识别架构：探测器注册制
 

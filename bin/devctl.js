@@ -27,6 +27,7 @@ function parseArgs(argv) {
     else if (a === '--port') opts.port = Number(argv[++i])
     else if (a === '--timeout') opts.timeout = Number(argv[++i])
     else if (a === '--module') opts.module = argv[++i]
+    else if (a === '--profile') opts.profile = argv[++i]
     else if (a === '--lines') opts.lines = Number(argv[++i])
     else if (a === '--type') opts.type = argv[++i]
     else if (a.startsWith('--root=')) opts.root = a.slice(7)
@@ -34,6 +35,7 @@ function parseArgs(argv) {
     else if (a.startsWith('--port=')) opts.port = Number(a.slice(7))
     else if (a.startsWith('--timeout=')) opts.timeout = Number(a.slice(10))
     else if (a.startsWith('--module=')) opts.module = a.slice(9)
+    else if (a.startsWith('--profile=')) opts.profile = a.slice(10)
     else if (a.startsWith('--lines=')) opts.lines = Number(a.slice(8))
     else if (!a.startsWith('-')) opts._.push(a)
   }
@@ -346,8 +348,18 @@ async function cmdBuild(opts, ctx) {
     }
   }
 
+  // 环境：-P 拼错会让整条命令白跑，提前拦住
+  if (opts.profile) {
+    const profiles = project.profiles || []
+    if (!profiles.includes(opts.profile)) {
+      fail(`项目 "${id}" 没有 profile "${opts.profile}"\n  可用: ${profiles.join(', ') || '(该项目没有声明 profile)'}`)
+    }
+  }
+
   if (!opts.json && !opts.quiet) {
-    const scope = opts.module ? ` ${c.dim(`-pl ${opts.module}`)}` : ''
+    const scope =
+      (opts.module ? ` ${c.dim(`-pl ${opts.module}`)}` : '') +
+      (opts.profile ? ` ${c.dim(`-P ${opts.profile}`)}` : '')
     console.log(`${c.dim('▶')} ${c.bold(project.id)} ${taskName}${scope} ${c.dim(`(${project.absPath})`)}`)
   }
 
@@ -358,6 +370,7 @@ async function cmdBuild(opts, ctx) {
     config: ctx.config,
     json: opts.json,
     module: opts.module || null,
+    profile: opts.profile || null,
     timeoutMs: opts.timeout,
     onData:
       opts.json || opts.quiet
@@ -573,6 +586,7 @@ ${c.bold('devctl')} —— 多仓工作区项目运行器
   --node <版本>     临时指定 Node 版本
   --port <端口>     指定端口
   --module <模块>   只构建/发布这个 Maven 模块（默认整个 reactor）
+  --profile <环境>  激活 Maven profile（正式包/测试包，如 release-product）
   --timeout <ms>    构建超时
   --lines <n>       日志行数
 
@@ -582,6 +596,7 @@ ${c.bold('devctl')} —— 多仓工作区项目运行器
   devctl run api-service debug
   devctl build api-service --timeout 600000
   devctl build auth deploy --module cloud-auth-api
+  devctl build auth build --profile release-product
   devctl exclude legacy-app
   devctl include vendor/legacy-app
   devctl list --json

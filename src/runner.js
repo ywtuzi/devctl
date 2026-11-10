@@ -112,13 +112,34 @@ export function resolveNpmRuntime(nodeInfo) {
 }
 
 /**
+ * 指定激活的 Maven profile（正式包 / 测试包 / 本地包通常就是靠它选的）。
+ * 参数里已有的 -P 会被替换掉，避免同时激活两个互相冲突的环境。
+ */
+export function withProfileArgs(args, profile) {
+  const out = []
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]
+    if (a === '-P' || a === '--activate-profiles') {
+      i++
+      continue
+    }
+    out.push(a)
+  }
+  out.push('-P', profile)
+  return out
+}
+
+/**
  * 只构建指定模块：把参数里已有的 -pl / -am 换掉。
  *
- * -am 必须去掉——它会把这个模块的上游依赖一起拉进 reactor，
- * 于是 deploy / install 会连带作用在它们身上。这正是「只想发一个模块」时
- * 最反直觉的地方：加了 -am 反而发得更多。
+ * -am 的取舍要看 goal：
+ *   - deploy：必须去掉。它会把上游模块一起拉进 reactor，deploy 连带作用在它们
+ *     身上——和「只发一个模块」正好相反，反而发得更多。
+ *   - package / install / test：必须加上。distribution 这类模块要打包兄弟模块的
+ *     jar，没有 -am 就只会在原地打一个缺料的包。
  */
 export function withModuleArgs(args, module) {
+  const publishing = args.includes('deploy')
   const out = []
   for (let i = 0; i < args.length; i++) {
     const a = args[i]
@@ -130,6 +151,7 @@ export function withModuleArgs(args, module) {
     out.push(a)
   }
   out.push('-pl', module)
+  if (!publishing) out.push('-am')
   return out
 }
 
@@ -137,7 +159,7 @@ export function withModuleArgs(args, module) {
  * 把项目 task 解析成可直接 spawn 的规格
  * @returns {{cmd, args, shell, cwd, env, encoding, runtimeLabel}}
  */
-export function buildExecSpec({ project, task, config, port, module }) {
+export function buildExecSpec({ project, task, config, port, module, profile }) {
   const javaInfo = resolveJava(config.toolchain.javaHome)
   const maven = resolveMaven(config.toolchain.mavenHome)
   const nodeWanted = project.node || task.node || null
@@ -159,8 +181,14 @@ export function buildExecSpec({ project, task, config, port, module }) {
     if (port && project.type !== 'vue-cli') args.push('--', '--port', String(port))
   } else if (task.type === 'mvn') {
     cmd = maven.cmd
-    // run/debug 已经用 -pl 指定了可运行模块，不能再追加一个
-    args = module && task.kind !== 'run' ? withModuleArgs(task.args, module) : [...task.args]
+    // run/debug 已经用 -pl 指定了可运行模块，不能再追加一个；
+    // -P 只用于构建类任务——启动时的环境由配置文件里的 spring.profiles.active 决定。
+    let scoped = [...task.args]
+    if (task.kind !== 'run') {
+      if (profile) scoped = withProfileArgs(scoped, profile)
+      if (module) scoped = withModuleArgs(scoped, module)
+    }
+    args = scoped
     shell = true // mvn.cmd 需要 shell
     runtimeLabel = `java ${javaInfo.ok ? javaInfo.home : 'PATH'}`
     if (task.debug) {
@@ -318,7 +346,7 @@ export async function startRun({ root, project, taskName, config, portOverride, 
 
 /* ------------------------------ 构建（阻塞） ------------------------------ */
 
-export function buildTask({ root, project, taskName, config, json, onData, timeoutMs, module }) {
+export function buildTask({ root, project, taskName, config, json, onData, timeoutMs, module, profile }) {
   const task = project.tasks[taskName]
   if (!task) {
     throw new Error(`项目 ${project.id} 没有任务 "${taskName}"；可用: ${Object.keys(project.tasks).join(', ')}`)
@@ -330,7 +358,7 @@ export function buildTask({ root, project, taskName, config, json, onData, timeo
   const paths = ensureState(root)
   const runId = runIdFor(project.id, taskName)
   const logPath = join(paths.logs, `${runId}.log`)
-  const spec = buildExecSpec({ project, task, config, module })
+  const spec = buildExecSpec({ project, task, config, module, profile })
 
   const startedAt = Date.now()
   writeRecord(root, runId, {

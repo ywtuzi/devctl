@@ -35,6 +35,12 @@ function hostOf(url) {
   }
 }
 
+/** pom 里声明的 profile id 列表（环境差异通常就藏在这里） */
+const profileIds = (xml) =>
+  [...String(xml).matchAll(/<profile>([\s\S]*?)<\/profile>/g)]
+    .map((m) => re(m[1], /<id>\s*([^<]+?)\s*<\/id>/))
+    .filter(Boolean)
+
 export function detect(dir, ctx) {
   const pom = join(dir, 'pom.xml')
   if (!existsSync(pom)) return null
@@ -56,23 +62,28 @@ export function detect(dir, ctx) {
   // 找带 spring-boot-maven-plugin 的模块 → 可运行模块
   // 规则：pluginManagement 里的声明不算；packaging=pom 的聚合根自身不可运行
   //      （聚合根上的 <build><plugins> 会被子模块继承，直接看字符串会误判）
+  // 顺带把所有模块的 profile 收上来：正式包/测试包通常就是靠 -P 选的，
+  // 只读根 pom 会漏掉只声明在子模块里的 release-dev / release-product。
   const stripPM = (s) => s.replace(/<pluginManagement>[\s\S]*?<\/pluginManagement>/g, '')
+  const profiles = [...new Set(profileIds(xml))]
   let runModule = null
   if (packaging !== 'pom' && stripPM(xml).includes('spring-boot-maven-plugin')) {
     runModule = '.'
   }
-  if (!runModule) {
-    for (const m of modules) {
-      const mp = join(dir, m, 'pom.xml')
-      if (!existsSync(mp)) continue
-      try {
-        if (stripPM(readFileSync(mp, 'utf8')).includes('spring-boot-maven-plugin')) {
-          runModule = m
-          break
-        }
-      } catch {
-        /* 忽略不可读模块 */
-      }
+  for (const m of modules) {
+    const mp = join(dir, m, 'pom.xml')
+    if (!existsSync(mp)) continue
+    let moduleXml
+    try {
+      moduleXml = readFileSync(mp, 'utf8')
+    } catch {
+      continue // 忽略不可读模块
+    }
+    for (const id of profileIds(moduleXml)) {
+      if (!profiles.includes(id)) profiles.push(id)
+    }
+    if (!runModule && stripPM(moduleXml).includes('spring-boot-maven-plugin')) {
+      runModule = m
     }
   }
 
@@ -155,6 +166,7 @@ export function detect(dir, ctx) {
     javaVersion,
     version,
     modules,
+    profiles,
     runModule,
     runnable,
     deployRepos: repos,

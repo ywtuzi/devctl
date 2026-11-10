@@ -45,14 +45,6 @@ window.__ModuleLoader__.load({
     const GROUPS = ['frontend', 'backend', 'fullstack', 'tool']
 
     const PLATFORM_ORDER = ['h5', 'mp-weixin', 'mp-alipay', 'mp-baidu', 'mp-qq', 'mp-toutiao', 'mp-lark', 'mp-kuaishou', 'mp-jd', 'mp-xhs', 'mp-harmony', 'quickapp-webview', 'custom']
-    // 多 facet 项目的任务名形如 node:dev / maven:build，第一段是 facet 不是平台
-    const FACET_PREFIXES = new Set(['node', 'maven', 'marker', 'custom'])
-    const platformOf = (name) => {
-      const parts = String(name).split(':')
-      if (parts.length < 2) return null
-      if (FACET_PREFIXES.has(parts[0])) return null
-      return parts[1]
-    }
     const fmt = (s) => (s >= 60 ? `${Math.floor(s / 60)}m${s % 60}s` : `${s}s`)
 
     // chip 的外观直接复用行内按钮的 styles.btn（细边框 + 6px 圆角），
@@ -131,6 +123,8 @@ window.__ModuleLoader__.load({
           version: '版本',
           module: '模块',
           allModules: '全部模块',
+          profile: '环境',
+          noProfile: '不指定',
           moduleHint: '多模块仓可只处理其中一个',
           idle: '未运行',
         })
@@ -183,6 +177,8 @@ window.__ModuleLoader__.load({
           version: 'Version',
           module: 'Module',
           allModules: 'All modules',
+          profile: 'Profile',
+          noProfile: 'None',
           moduleHint: 'Limit to a single module of a multi-module repo',
           idle: 'Not running',
         })
@@ -305,7 +301,10 @@ window.__ModuleLoader__.load({
 
           const requestAction = async (project, task, mode) => {
             setNotice(null)
-            setConfirm({ mode, project, task, plan: null, loading: true, error: null, module: null, pendingModule: null })
+            setConfirm({
+              mode, project, task, plan: null, loading: true, error: null,
+              module: null, profile: null, pendingScope: null,
+            })
             try {
               const plan = await post('/preview', { id: project.id, task: task.name })
               setConfirm((c) => (c ? { ...c, plan, loading: false } : c))
@@ -314,24 +313,32 @@ window.__ModuleLoader__.load({
             }
           }
 
-          // 多模块仓：切到「只处理某一个模块」。重算命令但不关掉弹层，
-          // 用 pendingModule 丢弃迟到的旧响应，避免连点时命令和选中项对不上。
-          const pickModule = async (m) => {
+          // 多模块仓 / 多环境仓：在弹层里切作用域（模块、profile），重算命令但不关弹层。
+          // pendingScope 用来丢弃迟到的旧响应，避免连点时命令和选中项对不上。
+          const pickScope = async (key, value) => {
             const cur = confirm
             if (!cur) return
-            setConfirm((c) => (c ? { ...c, module: m, pendingModule: m, loading: true, error: null } : c))
+            const next = {
+              ...cur,
+              [key]: value,
+              pendingScope: `${key}:${value || ''}`,
+              loading: true,
+              error: null,
+            }
+            setConfirm(next)
             try {
               const plan = await post('/preview', {
                 id: cur.project.id,
                 task: cur.task.name,
-                module: m || undefined,
+                module: next.module || undefined,
+                profile: next.profile || undefined,
               })
               setConfirm((c) =>
-                c && c.pendingModule === m ? { ...c, plan, loading: false } : c
+                c && c.pendingScope === next.pendingScope ? { ...c, plan, loading: false } : c
               )
             } catch (e) {
               setConfirm((c) =>
-                c && c.pendingModule === m ? { ...c, loading: false, error: e.message } : c
+                c && c.pendingScope === next.pendingScope ? { ...c, loading: false, error: e.message } : c
               )
             }
           }
@@ -355,10 +362,13 @@ window.__ModuleLoader__.load({
               }
               const body = { id: project.id, task: task.name }
               if (cur.module) body.module = cur.module
+              if (cur.profile) body.profile = cur.profile
               const r = await post('/build', body)
               if (r && r.busy) return `${project.id} 已在执行中（${r.runId}）`
-              const scope = cur.module ? ` (${cur.module})` : ''
-              return `${project.id} · ${verbOf(task)}${scope} 已开始`
+              const scope = [cur.profile ? `-P ${cur.profile}` : null, cur.module ? `-pl ${cur.module}` : null]
+                .filter(Boolean)
+                .join(' ')
+              return `${project.id} · ${verbOf(task)}${scope ? ` (${scope})` : ''} 已开始`
             })
           }
 
@@ -515,6 +525,25 @@ window.__ModuleLoader__.load({
           // 选项 chip：单选，只有当前选中项描边
           const selChip = (on) => (on ? 'devctl-chip is-selected' : 'devctl-chip')
 
+          // 一行单选作用域（模块 / 环境）：点一下重算命令，选中项描边
+          const scopeRow = (label, current, noneLabel, items, key) =>
+            h('div', { style: { marginTop: 8 } },
+              h('div', { style: styles.cmdLabel }, `${label} · ${current || noneLabel} (${items.length})`),
+              h('div', { style: styles.chips },
+                h('button', {
+                  key: '__none',
+                  className: selChip(!current),
+                  style: styles.btn,
+                  onClick: () => pickScope(key, null),
+                }, noneLabel),
+                items.map((x) =>
+                  h('button', {
+                    key: x,
+                    className: selChip(current === x),
+                    style: styles.btn,
+                    onClick: () => pickScope(key, x),
+                  }, x))))
+
           const kv = (k, v) =>
             v == null || v === ''
               ? null
@@ -562,23 +591,10 @@ window.__ModuleLoader__.load({
               plan
                 ? h('div', null,
                     plan.modules && plan.modules.length && task.kind !== 'run'
-                      ? h('div', { style: { marginTop: 8 } },
-                          h('div', { style: styles.cmdLabel },
-                            `${t('module')} · ${plan.module || t('allModules')} (${plan.modules.length})`),
-                          h('div', { style: styles.chips },
-                            h('button', {
-                              key: '__all',
-                              className: selChip(!plan.module),
-                              style: styles.btn,
-                              onClick: () => pickModule(null),
-                            }, t('allModules')),
-                            plan.modules.map((m) =>
-                              h('button', {
-                                key: m,
-                                className: selChip(plan.module === m),
-                                style: styles.btn,
-                                onClick: () => pickModule(m),
-                              }, m))))
+                      ? scopeRow(t('module'), plan.module, t('allModules'), plan.modules, 'module')
+                      : null,
+                    plan.envProfiles && plan.envProfiles.length && task.kind !== 'run'
+                      ? scopeRow(t('profile'), plan.profile, t('noProfile'), plan.envProfiles, 'profile')
                       : null,
                     kv(t('cwd'), plan.cwd),
                     kv(t('runtime'), plan.type === 'mvn' ? `java ${plan.javaHome || ''}` : plan.type === 'shell' ? 'shell' : `node ${plan.nodeVersion}`),
@@ -670,13 +686,14 @@ window.__ModuleLoader__.load({
           }
 
           const taskGroups = (tasks) => {
-            const withColon = tasks.filter((x) => platformOf(x.name))
-            if (!withColon.length) {
+            // 平台分组只看探测器给的 platform 字段。不要从任务名里的冒号去猜——
+            // 否则 package:dev 这类自定义任务名会被当成一个叫 dev 的平台。
+            if (!tasks.some((x) => x.platform)) {
               return { plain: true, run: tasks.filter((x) => x.kind === 'run'), build: tasks.filter((x) => x.kind === 'build') }
             }
             const byPlat = new Map()
             for (const tk of tasks) {
-              const plat = platformOf(tk.name) || 'other'
+              const plat = tk.platform || 'other'
               if (!byPlat.has(plat)) byPlat.set(plat, [])
               byPlat.get(plat).push(tk)
             }

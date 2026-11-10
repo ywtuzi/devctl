@@ -7,23 +7,40 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
-import { withModuleArgs } from '../src/runner.js'
+import { withModuleArgs, withProfileArgs } from '../src/runner.js'
 import { buildPlan } from '../src/plan.js'
 
 // 1) 纯函数：追加 -pl，并把已有的 -pl / -am 换掉
 assert.deepEqual(
   withModuleArgs(['clean', 'deploy', '-DskipTests'], 'api'),
   ['clean', 'deploy', '-DskipTests', '-pl', 'api'],
-  '没有 -pl 时应直接追加'
+  '发布不能带 -am，否则上游模块会被一起 deploy'
 )
 assert.deepEqual(
-  withModuleArgs(['-pl', 'svc', '-am', 'spring-boot:run'], 'api'),
-  ['spring-boot:run', '-pl', 'api'],
-  '-am 必须去掉，否则上游模块会一起被 deploy'
+  withModuleArgs(['clean', 'package', '-DskipTests'], 'dist'),
+  ['clean', 'package', '-DskipTests', '-pl', 'dist', '-am'],
+  '打包要带 -am，否则 distribution 拿不到兄弟模块的 jar'
 )
 assert.deepEqual(
   withModuleArgs(['-pl', 'a', '--also-make', 'deploy', '--projects', 'b'], 'c'),
   ['deploy', '-pl', 'c'],
+  '已有的 -pl / -am 要被替换，长参数形式同样'
+)
+
+// 1b) 环境：-P 只能有一个，旧的必须被换掉
+assert.deepEqual(
+  withProfileArgs(['clean', 'package', '-DskipTests'], 'release-dev'),
+  ['clean', 'package', '-DskipTests', '-P', 'release-dev'],
+  '没有 -P 时应直接追加'
+)
+assert.deepEqual(
+  withProfileArgs(['-P', 'release-local', 'deploy'], 'release-product'),
+  ['deploy', '-P', 'release-product'],
+  '同时激活两个环境会互相打架，必须替换'
+)
+assert.deepEqual(
+  withProfileArgs(['--activate-profiles', 'x', 'deploy'], 'y'),
+  ['deploy', '-P', 'y'],
   '长参数形式同样要被替换'
 )
 
@@ -43,6 +60,11 @@ try {
   <version>1.0.0</version>
   <packaging>pom</packaging>
   <modules><module>a</module><module>b</module></modules>
+  <profiles>
+    <profile><id>release-dev</id></profile>
+    <profile><id>release-product</id></profile>
+    <profile><id>gen-mappers</id></profile>
+  </profiles>
   <distributionManagement>
     <repository><id>rel</id><url>http://nexus.example.com:8182/repository/maven-releases/</url></repository>
   </distributionManagement>
@@ -66,6 +88,42 @@ try {
     () => buildPlan({ root, id: 'svc', taskName: 'deploy', module: 'zzz' }),
     /没有模块 "zzz"/,
     '不存在的模块应直接报错，而不是给一条会跑错的命令'
+  )
+
+  // 3) 环境（-P）：只认 pom 里声明过的 profile
+  const env = await buildPlan({ root, id: 'svc', taskName: 'build', profile: 'release-dev' })
+  assert.deepEqual(
+    env.profiles,
+    ['release-dev', 'release-product', 'gen-mappers'],
+    'profile 清单应来自 pom（含工具类 profile，供 CLI 校验用）'
+  )
+  assert.deepEqual(
+    env.envProfiles,
+    ['release-dev', 'release-product'],
+    '环境选择器只展示环境类 profile，gen-mappers 这类工具 profile 不进 UI'
+  )
+  assert.equal(env.profile, 'release-dev')
+  assert.ok(env.display.endsWith('-P release-dev'), `命令应带 -P，实际: ${env.display}`)
+  assert.deepEqual(env.args.slice(-2), ['-P', 'release-dev'], '真实执行参数也要带 -P')
+  assert.ok(env.note.includes('release-dev'), `提示应说明当前环境，实际: ${env.note}`)
+
+  const both = await buildPlan({
+    root,
+    id: 'svc',
+    taskName: 'build',
+    profile: 'release-product',
+    module: 'a',
+  })
+  assert.deepEqual(
+    both.args.slice(-4),
+    ['release-product', '-pl', 'a', '-am'],
+    '环境与模块可以叠加'
+  )
+
+  await assert.rejects(
+    () => buildPlan({ root, id: 'svc', taskName: 'build', profile: 'nope' }),
+    /没有 profile "nope"/,
+    '拼错的 profile 会让整条命令白跑，必须提前拦住'
   )
 
   console.log('module.mjs OK')
