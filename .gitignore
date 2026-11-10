@@ -1,0 +1,14 @@
+# 运行态：扫描结果 / 运行记录 / 日志 / 剔除偏好
+# 里面是绝对路径与本机工具链信息，不入库
+.devctl/
+
+# 真实配置：含本机 JAVA_HOME / maven / nvm 路径与私有项目清单。
+# 它通常放在「工作区根」而不是本包目录里；这里一并挡掉，避免误提交。
+# 公开模板见 devctl.config.example.json
+devctl.config.json
+
+# 依赖与构建噪音
+node_modules/
+*.log
+.DS_Store
+Thumbs.db

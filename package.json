@@ -1,0 +1,53 @@
+{
+  "name": "devctl",
+  "version": "0.1.0",
+  "private": true,
+  "description": "多仓工作区项目运行器：扫描识别前后端项目，统一 run / build / debug，CLI 与 AI agent 共用一套项目注册表",
+  "license": "MIT",
+  "keywords": [
+    "monorepo",
+    "multi-repo",
+    "dev-server",
+    "maven",
+    "spring-boot",
+    "vue-cli",
+    "vite",
+    "uni-app",
+    "vuepress",
+    "nvm",
+    "deepseek-harness",
+    "dsh"
+  ],
+  "type": "module",
+  "bin": {
+    "devctl": "./bin/devctl.js",
+    "devctl-plan": "./bin/plan.js",
+    "devctl-attach": "./bin/attach.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "dsh-plugin/",
+    "devctl.config.example.json",
+    "README.md",
+    "ARCHITECTURE.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "devctl": "node bin/devctl.js",
+    "test": "node test/util.mjs && node test/scan.mjs && node test/runid.mjs && node test/ports.mjs",
+    "test:util": "node test/util.mjs",
+    "test:scan": "node test/scan.mjs",
+    "test:runid": "node test/runid.mjs",
+    "test:ports": "node test/ports.mjs"
+  },
+  "comment": {
+    "定位": "工作区级的「项目运行器」：扫描多仓、统一 run/build/debug。dsh-plugin/ 是它给 DeepSeek Harness 做的薄壳，不是另一套逻辑——插件所有操作都转成对 bin/devctl.js 的调用。",
+    "零依赖原则": "运行时不引入任何第三方包：GBK 解码用 Node 内置 TextDecoder，表格/颜色自己画，端口探测用 net。好处是 clone 下来直接能跑，不需要 npm install。",
+    "配置分离": "机器相关的路径（JAVA_HOME / maven / nvm）和私有项目清单只写在工作区根的 devctl.config.json，不入库；模板见 devctl.config.example.json。",
+    "测试": "test/*.mjs 全部在临时目录里构造假项目，不碰真实工作区、不依赖外部服务与网络。"
+  }
+}
