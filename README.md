@@ -104,8 +104,19 @@ devctl logs web-a_dev_20260101090000 -f   # 跟日志
   },
   "overrides": {
     "my-web-app": { "basePort": 8080, "node": "16.20.2" },
-    "my-api-service": { "debugPort": 5005 },
-    "some-lib": { "runnable": false }
+    "some-lib": { "runnable": false },
+
+    "my-api-service": {
+      "debugPort": 5005,
+      // 项目特有的发布流程：在自动识别的任务之上追加，不用改代码
+      "extraTasks": {
+        "package:product": {
+          "label": "生产包",
+          "kind": "build",
+          "command": "mvn clean package -P release-product -pl my-distribution -am -DskipTests"
+        }
+      }
+    }
   }
 }
 ```
@@ -118,16 +129,40 @@ devctl logs web-a_dev_20260101090000 -f   # 跟日志
 | 项目在根目录之外 | `extraRoots` 加一行路径 |
 | 纳入之前排除的项目 | `devctl include <项目>`，或删掉 `exclude` 里那行 |
 
-## 自动识别规则
+## 识别架构：探测器注册制
 
-- 目录里有 `pom.xml` 或 `package.json` → 视为项目，**不再向下递归**（避免把 Maven 子模块当成独立仓）
-- 没有构建文件的目录 → 继续向下探到 `maxDepth`（默认 2），用来发现嵌套项目
-- **Maven**：`spring-boot-maven-plugin` 所在模块 = 可运行模块；
-  `<pluginManagement>` 里的声明不算；`packaging=pom` 的聚合根自身不可运行
-- **Node**：按 `@vue/cli-service` 主版本判断是否 webpack4，决定绑定哪个 Node；
-  `uni` → uni-app（按 `-p <platform>` 生成平台任务）；`vuepress` → 文档站
-- 同目录同时有 `pom.xml` 和 `package.json` → `mixed`，任务带 `maven:` / `node:` 前缀
-- `*-custom` 这类需要额外参数的脚本不会被选为默认任务
+核心扫描器**不认识任何具体生态**。它只做一件事：遍历目录 → 问每个探测器「你认领这里吗」→ 汇总成项目。
+
+内置探测器：
+
+| 探测器 | 认领条件 | 产出 |
+|---|---|---|
+| `maven` | `pom.xml` | run / debug / build / install |
+| `node` | `package.json` | 按 scripts 推导 run / build |
+| `marker`（兜底·弱） | `go.mod` / `Cargo.toml` / `pyproject.toml` / `build.gradle` / compose / `*.csproj` | 只列出项目，**不猜命令** |
+| `custom` | `devctl.config.json` 的 `custom` 声明 | 任意 shell 命令 |
+
+探测器契约（`src/detectors/*.js`）：
+
+```js
+export const id = 'maven'            // 唯一标识
+export const weak = false            // 可选：弱探测器不独占目录
+export const fallback = false        // 可选：只在没有其它探测器命中时运行
+export function probe(dir, ctx) {}   // 便宜的「这目录像不像我的项目」
+export function detect(dir, ctx) {}  // 返回 facet 或 null
+export function extraProjects(ctx)   // 可选：贡献目录扫描之外的项目
+```
+
+**新增一种生态 = 在 `src/detectors/` 加一个文件 + 底部 `register()` 一行。**
+`scan` / `runner` / CLI / 面板都不用改。
+
+目录递归规则：
+
+- **强探测器**命中 → 该目录独占，不再向下（Maven 子模块不会被当成独立仓库）
+- **弱探测器**命中 → 仍继续向下，找嵌套项目（Python 仓里的 `web/` 前端照样能找到）
+- 单个探测器抛错不会中断扫描，错误会挂在该项目上显示
+
+为什么 `marker` 只认不猜：Go / Rust / Python 的启动方式千差万别（`go run ./cmd/x`、`cargo run`、`uvicorn app:main`），猜错比不猜更糟——先让它出现在列表里，命令由 `custom` 或后续专用探测器补。
 
 ## 六个我们踩过的坑
 
@@ -174,7 +209,7 @@ bin/plan.js          预演：只解析命令不执行（面板二次确认用�
 bin/attach.js        前台运行：保留彩色输出与 Ctrl+C
 src/config.js        配置加载、根定位、剔除/选入偏好
 src/scan.js          目录扫描、override 合并、端口冲突
-src/parse.js         Maven / Node 项目解析
+src/detectors/      生态探测器（maven / node / marker / custom）
 src/toolchain.js     Node(nvm) / Java / Maven 解析
 src/runner.js        命令解析、spawn、解码、日志、运行态
 src/daemon.js        长驻任务守护进程

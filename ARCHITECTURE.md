@@ -76,7 +76,7 @@ Maven → GBK，Node 工具 → UTF-8。用流式 `TextDecoder` 避免多字节�
 |---|---|
 | `src/config.js` | 配置加载、工作区根定位、prefs 读写 |
 | `src/util.js` | 排除规则匹配、CJK 宽度对齐、版本比较 |
-| `src/parse.js` | Maven / Node 项目解析与任务生成 |
+| `src/detectors/` | 生态探测器与注册表（maven / node / marker / custom） |
 | `src/scan.js` | 目录遍历、override 合并、端口冲突检测 |
 | `src/toolchain.js` | nvm 版本发现、Java/Maven 定位、子进程 env 组装 |
 | `src/runner.js` | 命令规格、spawn、解码、日志、运行记录、停止 |
@@ -86,7 +86,32 @@ Maven → GBK，Node 工具 → UTF-8。用流式 `TextDecoder` 避免多字节�
 
 ## 扩展点
 
-- **新构建系统**：在 `src/parse.js` 加一个 `parseXxx()`，返回同样形状的 `tasks` 即可，
-  上层（scan / runner / CLI / 面板）无需改动。
-- **新前端**：实现"读取项目列表 + 调用 CLI"两层即可，不要复制 Runner 逻辑。
-- **新任务类型**：在 `buildExecSpec()` 里加分支，预演与实际执行自动保持一致。
+插件边界靠**探测器注册制**扩展，核心零改动：
+
+```js
+// src/detectors/go.js
+export const id = 'go'
+export const probe = (dir) => existsSync(join(dir, 'go.mod'))
+export function detect(dir) {
+  if (!probe(dir)) return null
+  const mod = readFileSync(join(dir, 'go.mod'), 'utf8').match(/^module\s+(\S+)/m)
+  const name = mod ? mod[1].split('/').pop() : 'app'
+  return {
+    kind: 'go', type: 'go', runnable: true, warnings: [],
+    tasks: {
+      run:   { name: 'run', kind: 'run', type: 'shell', command: `go run ./cmd/${name}`, encoding: 'utf8', label: '启动' },
+      build: { name: 'build', kind: 'build', type: 'shell', command: `go build -o bin/${name} ./cmd/${name}`, encoding: 'utf8', label: '构建' },
+    },
+  }
+}
+```
+
+再在 `src/detectors/index.js` 底部 `register(go)` 一行即可——`scan` / `runner` / CLI / 面板都不用动。
+
+其它扩展方向：
+
+- **新构建系统**：加探测器（如上）。
+- **新前端**：实现「读取项目列表 + 调用 CLI」两层，不要复制 Runner 逻辑。
+- **新任务类型**：在 `buildExecSpec()` 加分支，预演与实际执行自动保持一致。
+- **新动作（test/lint/deploy）**：任务已有通用 `kind` 字段，探测器产出即可；
+  面板按 `kind` 分组渲染，不需要为新动作改代码。
