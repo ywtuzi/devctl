@@ -168,6 +168,13 @@ window.__ModuleLoader__.load({
           'git.behindTip': '本地落后远端，可 pull',
           'git.switchTo': '切换到 ',
           'git.trackCreate': '创建本地跟踪分支 ',
+          'git.vsBase': '相对',
+          'git.baseBehind': '落后',
+          'git.baseAhead': '超前',
+          'git.notTracking': '未跟踪',
+          'git.notTrackingTip': '远端已有同名分支，但本地没设置 upstream；可执行 git branch --set-upstream-to 关联',
+          'git.noRemote': '无远端',
+          'git.noRemoteTip': '远端当前没有同名分支：可能从未推送，也可能已在远端删除',
         })
         ctx.locale.register('devctl', 'en', {
           title: 'Project runner', subtitle: 'Status panel · confirm before run',
@@ -255,6 +262,13 @@ window.__ModuleLoader__.load({
           'git.behindTip': 'behind upstream, pull to update',
           'git.switchTo': 'Switch to ',
           'git.trackCreate': 'Create tracking branch ',
+          'git.vsBase': 'vs',
+          'git.baseBehind': 'behind',
+          'git.baseAhead': 'ahead',
+          'git.notTracking': 'not tracking',
+          'git.notTrackingTip': 'the remote already has this branch, but locally no upstream is set; run git branch --set-upstream-to',
+          'git.noRemote': 'no remote',
+          'git.noRemoteTip': 'no same-named branch on the remote now: it may never have been pushed, or was deleted there',
         })
         const t = ctx.locale.bind('devctl')
 
@@ -774,8 +788,15 @@ window.__ModuleLoader__.load({
                 setGitPanel((g) => (g && g.id === cur.id ? { ...g, error: msg } : g))
                 return
               }
-              setNotice({ text: `${cur.id} · git ${cur.op} 完成${r.out ? `：${String(r.out).split('\n')[0].slice(0, 120)}` : ''}` })
+              // fetch --prune 清理掉的远端分支：分支行上的 gone 徽标依赖本地分支的
+              // upstream 配置，没跟踪远端的本地分支不会有任何提示，所以这里单独说一句
+              const del = cur.op === 'fetch' && Array.isArray(r.deleted) && r.deleted.length
+                ? `清理了 ${r.deleted.length} 个远端已删分支：${r.deleted.slice(0, 3).join('、')}${r.deleted.length > 3 ? ` 等 ${r.deleted.length} 个` : ''}`
+                : ''
+              setNotice({ text: `${cur.id} · git ${cur.op} 完成${del ? `，${del}` : ''}${r.out ? `：${String(r.out).split('\n')[0].slice(0, 120)}` : ''}` })
               await openGitPanel(cur.id) // 刷新详情（分支可能变了）
+              // git 面板是 inset:0 覆盖层，会挡住底部 notice 条，所以同时写进面板
+              if (del) setGitPanel((g) => (g && g.id === cur.id ? { ...g, info: del } : g))
               await loadProjects()       // Tier0 分支名也可能变了
             } catch (e) {
               const msg = `git ${cur.op} 失败: ${e.message}`
@@ -819,6 +840,34 @@ window.__ModuleLoader__.load({
                 },
               }, text)
 
+            // 没有 upstream 的本地分支：远端到底有没有同名分支，面板要说清楚。
+            //   远端有同名分支 → 「未跟踪」（本地没设 upstream，可 set-upstream 关联）
+            //   远端没有同名分支 → 「无远端」（可能从未推送，也可能远端已删）
+            //   注：gone 徽标靠 upstream 配置才有比对基准，没 upstream 时它无从判断，
+            //   所以这两条灰/黄徽标就是该类分支唯一的远端状态反馈
+            const remoteRefNames = ((br && br.remote) || []).map((r) => r.name)
+            const hasRemoteTwin = (name) => remoteRefNames.some((r) => r === name || r.endsWith(`/${name}`))
+            const remoteBadge = (b) => {
+              if (b.upstream) return null
+              return hasRemoteTwin(b.name)
+                ? badge(t('git.notTracking'), 'var(--dsw-alias-state-warn-primary)', t('git.notTrackingTip'))
+                : badge(t('git.noRemote'), 'var(--dsw-alias-label-secondary)', t('git.noRemoteTip'))
+            }
+
+            // 相对基准分支（main/master）的进度：GitLab 式「落后|超前」
+            //   落后 → 黄色（主干有它没有的提交，该合主干/rebase 了）
+            //   只超前 → 绿色（干净地领先主干，可合入）
+            // 数据来自 gitBranches 同一条 for-each-ref，不额外 spawn
+            const baseBadge = (b) => {
+              if (b.baseAhead == null || b.baseBehind == null) return null
+              if (!b.baseAhead && !b.baseBehind) return null
+              const title = `${t('git.vsBase')} ${br.base}：${t('git.baseBehind')} ${b.baseBehind} · ${t('git.baseAhead')} ${b.baseAhead}`
+              const color = b.baseBehind
+                ? 'var(--dsw-alias-state-warn-primary)'
+                : 'var(--dsw-alias-state-success-primary)'
+              return badge(`${b.baseBehind}|${b.baseAhead}`, color, title)
+            }
+
             // 分支行：整行可点（GitLens 式），右侧 hover 提示
             // 分支行：整行可点；右侧差异徽标——
             //   单向差异（只 ahead 或只 behind）绿色：可推送/可拉取
@@ -848,6 +897,8 @@ window.__ModuleLoader__.load({
                   h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
                     b.current ? `● ${b.name}` : `  ${b.name}`),
                   b.current ? h('span', { style: { ...styles.meta, fontSize: 10 } }, t('git.current')) : null),
+                remoteBadge(b),
+                baseBadge(b),
                 trackBadge(b),
                 // 非当前分支落后远端 → 不切分支原地快进（fetch refspec，只 ff）
                 !b.current && b.behind && !b.ahead
@@ -901,6 +952,8 @@ window.__ModuleLoader__.load({
 
               gitPanel.loading ? h('div', { style: { ...styles.meta, padding: '12px 0' } }, t('loading')) : null,
               gitPanel.error ? h('div', { style: { color: 'var(--dsw-alias-state-error-primary)', padding: '8px 0' } }, gitPanel.error) : null,
+              // fetch 后的一次性提示（本次清理了哪些远端已删分支）；openGitPanel 会重置
+              gitPanel.info ? h('div', { style: { ...styles.meta, color: 'var(--dsw-alias-state-warn-primary)', padding: '6px 0' } }, gitPanel.info) : null,
               st && !st.ok ? h('div', { style: { ...styles.meta, padding: '8px 0' } }, t('git.nonGit')) : null,
 
               // 分支列表（有数据才渲染）
@@ -920,7 +973,7 @@ window.__ModuleLoader__.load({
                       : null,
                     others.length
                       ? h('div', null,
-                          h('div', { style: styles.taskGroupLabel }, `${t('git.local')} (${others.length})`),
+                          h('div', { style: styles.taskGroupLabel }, `${t('git.local')} (${others.length})${br.base ? ` · ${t('git.vsBase')} ${br.base}` : ''}`),
                           others.map((b) => branchRow(b, 'local')))
                       : null,
                     remotes.length
@@ -939,6 +992,8 @@ window.__ModuleLoader__.load({
                               title: exists ? t('git.switchTo') + short : `${t('git.trackCreate')} ${short}`,
                             },
                               h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, `  ${short}`),
+                              // 远端分支同样给「落后|超前 main」的进度（与本地分支同源、同一条 for-each-ref）
+                              baseBadge(r),
                               h('span', { style: { ...styles.meta, fontSize: 10 } }, exists ? '' : '+track'))
                           }))
                       : null)
