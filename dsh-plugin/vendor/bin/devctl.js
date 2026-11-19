@@ -521,7 +521,7 @@ async function cmdGit(opts, ctx) {
   const sub = opts._[1]
   const id = opts._[2]
   const arg = opts._[3]
-  const { readBranchFast, gitStatusDetail, gitBranches, gitFetch, gitPull, gitSwitch, gitUpdateBranch, gitDeleteBranch, mapLimit } = await import('../src/git.js')
+  const { readBranchFast, gitStatusDetail, gitBranches, gitFetch, gitPull, gitSwitch, gitUpdateBranch, gitDeleteBranch, parseFetchDeleted, mapLimit } = await import('../src/git.js')
 
   if (sub === 'status') {
     // devctl git status [--json]：全部项目的分支速览（零 spawn 直读）
@@ -547,16 +547,22 @@ async function cmdGit(opts, ctx) {
     const r = await gitBranches(project.absPath)
     if (!r.ok) fail(r.error)
     if (opts.json) return console.log(JSON.stringify(r, null, 2))
-    for (const b of r.local) console.log(`${b.current ? c.green('* ') : '  '}${b.name}`)
-    for (const b of r.remote) console.log(c.dim(`  remotes/${b.name}`))
+    // 相对基准分支的进度：GitLab 式「落后|超前」，两者全 0 就不占宽度
+    const vs = (b) => (r.base && (b.baseBehind || b.baseAhead) ? c.dim(`  ${b.baseBehind}|${b.baseAhead}`) : '')
+    for (const b of r.local) console.log(`${b.current ? c.green('* ') : '  '}${b.name}${vs(b)}`)
+    for (const b of r.remote) console.log(c.dim(`  remotes/${b.name}`) + vs(b))
+    if (r.base) console.log(c.dim(`  （a|b = 相对 ${r.base} 落后 a / 超前 b）`))
     return
   }
 
   if (sub === 'fetch') {
     const r = await gitFetch(project.absPath)
-    if (opts.json) return console.log(JSON.stringify({ ok: r.ok, out: r.out.trim(), error: r.err }))
+    // --prune 清理掉的远端分支：本地分支没有 upstream 配置时，分支行上的
+    // "远端已删" 徽标没有依据显示，这是唯一的可见反馈，所以一并回传
+    const deleted = parseFetchDeleted(r.err)
+    if (opts.json) return console.log(JSON.stringify({ ok: r.ok, out: r.out.trim(), error: r.err, deleted }))
     if (!r.ok) fail(r.err || 'fetch 失败')
-    console.log(`${c.green('✓')} ${project.id} fetch 完成`)
+    console.log(`${c.green('✓')} ${project.id} fetch 完成${deleted.length ? `，清理 ${deleted.length} 个远端已删分支：${deleted.join(', ')}` : ''}`)
     return
   }
 
@@ -588,12 +594,13 @@ async function cmdGit(opts, ctx) {
   }
 
   if (sub === 'delete') {
-    // 删本地分支；-d 只删已合并的，未合并会被拒绝（防误删丢提交）
-    if (!arg) fail('用法: devctl git delete <项目ID> <分支名>')
-    const r = await gitDeleteBranch(project.absPath, arg)
+    // 删本地分支；默认 -d 只删已合并的，未合并会被拒绝（防误删丢提交）。
+    // --force → -D：放弃未合并分支（面板「强制删除」按钮走这条）
+    if (!arg) fail('用法: devctl git delete <项目ID> <分支名> [--force]')
+    const r = await gitDeleteBranch(project.absPath, arg, Boolean(opts.force))
     if (opts.json) return console.log(JSON.stringify({ ok: r.ok, out: r.out.trim(), error: r.err }))
     if (!r.ok) fail(r.err || 'delete 失败')
-    console.log(`${c.green('✓')} ${project.id} · 已删除本地分支 ${arg}`)
+    console.log(`${c.green('✓')} ${project.id} · 已${opts.force ? '强制' : ''}删除本地分支 ${arg}`)
     return
   }
 

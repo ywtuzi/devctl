@@ -77,6 +77,33 @@ export function readBranchFast(absPath) {
   }
 }
 
+/**
+ * 直读基准分支（零 spawn）：本地 main → master → develop，
+ * 都没有再退 origin/main 等远端跟踪引用；都没有返回 null（不做相对对比）。
+ */
+export function readBaseBranch(absPath) {
+  const dot = findGitDir(absPath)
+  if (!dot) return null
+  const gitDir = resolveGitDir(dot)
+  const names = ['main', 'master', 'develop']
+  for (const n of names) {
+    if (existsSync(join(gitDir, 'refs', 'heads', n))) return n
+  }
+  for (const n of names) {
+    if (existsSync(join(gitDir, 'refs', 'remotes', 'origin', n))) return `origin/${n}`
+  }
+  // 分支被打包进 packed-refs 后，refs/ 下就没有对应文件了（clone 出来的仓常见）
+  try {
+    const packed = readFileSync(join(gitDir, 'packed-refs'), 'utf8')
+    const has = (ref) => packed.split('\n').some((l) => l.endsWith(` ${ref}`))
+    for (const n of names) if (has(`refs/heads/${n}`)) return n
+    for (const n of names) if (has(`refs/remotes/origin/${n}`)) return `origin/${n}`
+  } catch {
+    /* 没有 packed-refs */
+  }
+  return null
+}
+
 /* ------------------------------ Tier 1：按需详情（单仓 spawn） ------------------------------ */
 
 /**
@@ -134,22 +161,42 @@ export async function gitStatusDetail(absPath) {
 
 /**
  * 分支列表（本地含各自 upstream 差异 + 远端），供切换选择。
- * 用 for-each-ref 一条命令拿全：%(upstream:track) 从本地 ref 计算
- * ahead/behind（不发网络请求），形如 "[ahead 2]"/"[behind 1]"/"[ahead 1, behind 2]"/"[gone]"。
+ * 一条 for-each-ref 拿全，两套差异互不叠加 spawn：
+ *   - %(upstream:track)      与本地记录的 upstream 比，形如 "[ahead 2]"/"[behind 1]"/"[gone]"
+ *   - %(ahead-behind:<base>) 与基准分支（main/master，readBaseBranch 探出）比，
+ *                            GitLab 式「落后 a | 超前 b」（a = 落后数，b = 超前数）
+ * 第二个原子要 git ≥ 2.41；老版本整条命令会直接失败，降级重跑一次不带它（base 置 null）。
  */
 export async function gitBranches(absPath) {
-  const r = await git(absPath, [
+  const base = readBaseBranch(absPath)
+  const build = (withBase) => [
     'for-each-ref',
     '--sort=-committerdate',
-    '--format=%(refname)%09%(HEAD)%09%(upstream:short)%09%(upstream:track)',
+    `--format=%(refname)%09%(HEAD)%09%(upstream:short)%09%(upstream:track)${withBase ? `%09%(ahead-behind:${base})` : ''}`,
     'refs/heads', 'refs/remotes',
-  ], 15000)
-  if (!r.ok) return { ok: false, error: r.err, local: [], remote: [] }
+  ]
+  let withBase = Boolean(base)
+  let r = await git(absPath, build(withBase), 15000)
+  if (!r.ok && withBase) {
+    withBase = false
+    r = await git(absPath, build(false), 15000)
+  }
+  if (!r.ok) return { ok: false, error: r.err, base: null, local: [], remote: [] }
   const local = []
   const remote = []
   for (const line of r.out.split('\n')) {
     if (!line) continue
-    const [ref, headMark, upstream, track] = line.split('\t')
+    const [ref, headMark, upstream, track, vsBase] = line.split('\t')
+    // "(ahead behind)" 空格分隔：第一个是超前基准的提交数，第二个是落后者
+    let baseAhead = null
+    let baseBehind = null
+    if (withBase && vsBase) {
+      const m = vsBase.trim().match(/^(\d+)\s+(\d+)$/)
+      if (m) {
+        baseAhead = Number(m[1])
+        baseBehind = Number(m[2])
+      }
+    }
     // "[ahead 2, behind 1]" → { ahead: 2, behind: 1 }；空串 = 同步；[gone] = 远端已删
     let ahead = 0
     let behind = 0
@@ -167,19 +214,37 @@ export async function gitBranches(absPath) {
         ahead,
         behind,
         gone,
+        baseAhead,
+        baseBehind,
       })
     } else if (ref.startsWith('refs/remotes/')) {
       const name = ref.slice('refs/remotes/'.length)
-      if (!name.endsWith('/HEAD')) remote.push({ name })
+      // 远端分支同样带上相对基准分支的进度（origin/xxx 与 main 比）
+      if (!name.endsWith('/HEAD')) remote.push({ name, baseAhead, baseBehind })
     }
   }
-  return { ok: true, local, remote }
+  return { ok: true, base: withBase ? base : null, local, remote }
 }
 
 /* ------------------------------ Tier 2：显式操作 ------------------------------ */
 
 export async function gitFetch(absPath, { all = false } = {}) {
   return git(absPath, ['fetch', '--prune', ...(all ? ['--all'] : [])], 120000)
+}
+
+/**
+ * 从 `git fetch --prune` 的输出里抓出「本次被清理掉的远端分支」。
+ * 这些行走的是 stderr，格式固定（缩进可能变，用 [deleted] 锚定）：
+ *   " - [deleted]         (none)     -> origin/feat/local"
+ * 面板用它告诉用户"远端已删"——本地分支没跟踪远端时（无 upstream 配置）
+ * 分支行上的 gone 徽标是没有依据显示的，这条提示是唯一可见的反馈。
+ */
+export function parseFetchDeleted(text) {
+  const names = []
+  for (const m of String(text || '').matchAll(/\[deleted\]\s+\(none\)\s+->\s+(\S+)/g)) {
+    names.push(m[1])
+  }
+  return names
 }
 
 /** 仅 fast-forward；脏工作区/需要合并时 git 自己会拒绝，错误原样带回给用户 */
@@ -192,11 +257,13 @@ export async function gitSwitch(absPath, branch) {
 }
 
 /**
- * 删除本地分支。用 -d（而非 -D）：未合并的分支 git 会拒绝，防止误删丢提交。
+ * 删除本地分支。默认用 -d（而非 -D）：未合并的分支 git 会拒绝，防止误删丢提交。
  * 当前分支 git 也会拒绝（-d 与 -D 都不允许删 HEAD 所在分支）。
+ * force=true 时改用 -D：用于「提交已在别处重新应用（cherry-pick）、原件确认放弃」的场景，
+ * 由面板上的「强制删除」按钮显式触发，普通删除永远走 -d。
  */
-export async function gitDeleteBranch(absPath, branch) {
-  return git(absPath, ['branch', '-d', branch], 60000)
+export async function gitDeleteBranch(absPath, branch, force = false) {
+  return git(absPath, ['branch', force ? '-D' : '-d', branch], 60000)
 }
 
 /**
@@ -219,7 +286,7 @@ export const gitCommandPreview = {
   pull: () => 'git pull --ff-only',
   switch: (branch) => `git switch ${branch}`,
   update: (branch, remote = 'origin') => `git fetch ${remote} ${branch}:${branch}`,
-  delete: (branch) => `git branch -d ${branch}`,
+  delete: (branch, force = false) => `git branch -${force ? 'D' : 'd'} ${branch}`,
 }
 
 /* ------------------------------ 并发限流 ------------------------------ */

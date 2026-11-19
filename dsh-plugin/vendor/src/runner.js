@@ -201,7 +201,7 @@ export function buildExecSpec({ project, task, config, port, module, profile }) 
     if (port && project.type !== 'vue-cli') args.push('--', '--port', String(port))
   } else if (task.type === 'mvn') {
     cmd = maven.cmd
-    // run/debug 已经用 -pl 指定了可运行模块，不能再追加一个；
+    // run/debug 已经用 -f 指向可运行模块的 pom，不能再追加 -pl/-am；
     // -P 只用于构建类任务——启动时的环境由配置文件里的 spring.profiles.active 决定。
     let scoped = [...task.args]
     if (task.kind !== 'run') {
