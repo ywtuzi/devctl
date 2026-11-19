@@ -65,6 +65,10 @@ window.__ModuleLoader__.load({
   color: var(--dsw-alias-state-warn-primary) !important;
 }
 .devctl-chip.is-selected { border-color: var(--dsw-alias-brand-primary) !important; }
+/* git 分支行（GitLens 式列表）：hover 才出现操作提示 */
+.devctl-git-item { outline: none; text-align: left; width: 100%; background: transparent; }
+.devctl-git-item:hover { background: var(--dsw-alias-bg-layer-2) !important; }
+.devctl-git-item.is-current { color: var(--dsw-alias-brand-primary); font-weight: 600; }
 `
     function ensureChipCss() {
       if (typeof document === 'undefined' || document.getElementById('devctl-chip-css')) return
@@ -132,6 +136,38 @@ window.__ModuleLoader__.load({
           noProfile: '不指定',
           moduleHint: '多模块仓可只处理其中一个',
           idle: '未运行',
+          git: 'Git',
+          'git.branch': '分支',
+          'git.local': '本地分支',
+          'git.remote': '远端分支',
+          'git.remoteHint': '先 fetch 后在本地创建',
+          'git.dirty': '有改动',
+          'git.clean': '工作区干净',
+          'git.noUpstream': '未跟踪远端',
+          'git.detached': 'detached HEAD',
+          'git.nonGit': '该目录不是 git 仓库',
+          'git.fetch': '拉取远端信息 (fetch)',
+          'git.pull': '更新 (pull)',
+          'git.refresh': '刷新',
+          'git.confirm.fetch': '确认 fetch？',
+          'git.confirm.pull': '确认 pull？',
+          'git.confirm.switch': '确认切换分支？',
+          'git.confirm.update': '确认快进该分支？',
+          'git.confirm.delete': '确认删除本地分支？',
+          'git.deleteTip': '删除本地分支（仅已合并）',
+          'git.deleteHint': '未合并的分支会被 git 拒绝；删除后可从远端重新拉取',
+          'git.current': '当前',
+          'git.diverged': '本地与远端已分叉（各有新提交），需合并处理',
+          'git.gone': '远端已删',
+          'git.goneTip': '远端分支已删除',
+          'git.update': '更新',
+          'git.updateTip': '不切分支，把该分支快进到远端（git fetch，仅 fast-forward）',
+          'git.searchBranch': '搜索分支…',
+          'git.untracked': '未跟踪',
+          'git.aheadTip': '本地领先远端',
+          'git.behindTip': '本地落后远端，可 pull',
+          'git.switchTo': '切换到 ',
+          'git.trackCreate': '创建本地跟踪分支 ',
         })
         ctx.locale.register('devctl', 'en', {
           title: 'Project runner', subtitle: 'Status panel · confirm before run',
@@ -187,6 +223,38 @@ window.__ModuleLoader__.load({
           noProfile: 'None',
           moduleHint: 'Limit to a single module of a multi-module repo',
           idle: 'Not running',
+          git: 'Git',
+          'git.branch': 'Branch',
+          'git.local': 'Local branches',
+          'git.remote': 'Remote branches',
+          'git.remoteHint': 'fetch first, then create locally',
+          'git.dirty': 'dirty',
+          'git.clean': 'clean',
+          'git.noUpstream': 'no upstream',
+          'git.detached': 'detached HEAD',
+          'git.nonGit': 'not a git repository',
+          'git.fetch': 'Fetch',
+          'git.pull': 'Pull',
+          'git.refresh': 'Refresh',
+          'git.confirm.fetch': 'Fetch this repo?',
+          'git.confirm.pull': 'Pull this repo?',
+          'git.confirm.switch': 'Switch branch?',
+          'git.confirm.update': 'Fast-forward this branch?',
+          'git.confirm.delete': 'Delete this local branch?',
+          'git.deleteTip': 'Delete local branch (merged only)',
+          'git.deleteHint': 'unmerged branches are rejected by git; you can re-fetch from remote',
+          'git.current': 'current',
+          'git.diverged': 'diverged from upstream (both have new commits); merge needed',
+          'git.gone': 'gone',
+          'git.goneTip': 'upstream branch was deleted',
+          'git.update': 'update',
+          'git.updateTip': 'fast-forward this branch to its remote without switching (git fetch, ff only)',
+          'git.searchBranch': 'Search branches…',
+          'git.untracked': 'untracked',
+          'git.aheadTip': 'ahead of upstream',
+          'git.behindTip': 'behind upstream, pull to update',
+          'git.switchTo': 'Switch to ',
+          'git.trackCreate': 'Create tracking branch ',
         })
         const t = ctx.locale.bind('devctl')
 
@@ -202,6 +270,12 @@ window.__ModuleLoader__.load({
           })
           const dragRef = useRef(null)
           const [projects, setProjects] = useState([])
+          const [gitBranches, setGitBranches] = useState({})
+          const [gitPanel, setGitPanel] = useState(null)
+          const [gitConfirm, setGitConfirm] = useState(null)
+          // 各项目最近一次 git-detail 的已知状态（脏/领先落后），行内 chip 展示用
+          const [gitKnown, setGitKnown] = useState({})
+          const [gitQuery, setGitQuery] = useState('')
           const [excluded, setExcluded] = useState([])
           const [running, setRunning] = useState([])
           const [recent, setRecent] = useState([])
@@ -251,6 +325,7 @@ window.__ModuleLoader__.load({
               const d = await call('/projects')
               setProjects(d.projects || [])
               setExcluded(d.excluded || [])
+              setGitBranches(d.gitBranches || {})
               setError(null)
             } catch (e) {
               setError(e.message)
@@ -638,6 +713,248 @@ window.__ModuleLoader__.load({
             )
           }
 
+          /* ---------------- git：Tier1 按需详情 + Tier2 显式操作 ---------------- */
+
+          // 点开某个项目的 git 面板才拉详情（spawn git ~1s，不进热路径）
+          const openGitPanel = useCallback(async (id) => {
+            setConfirm(null)
+            setCon(null)
+            setGitQuery('')
+            setGitPanel({ id, loading: true, data: null, error: null })
+            try {
+              const d = await call(`/git-detail?id=${encodeURIComponent(id)}`)
+              setGitPanel((g) => (g && g.id === id ? { ...g, loading: false, data: d } : g))
+              if (d && d.status && d.status.ok) {
+                setGitKnown((k) => ({ ...k, [id]: d.status }))
+              }
+            } catch (e) {
+              setGitPanel((g) => (g && g.id === id ? { ...g, loading: false, error: e.message } : g))
+            }
+          }, [])
+
+          // git 写操作：先预演拿命令，弹确认卡（与 run/build 同款交互）。
+          // op 'update' 时 remote 由分支 upstream 推出（面板已有数据，服务端预演零 spawn）
+          const remoteOf = (b) => (b && b.upstream ? b.upstream.split('/')[0] : 'origin')
+
+          const requestGitAction = async (op, id, branch, remote) => {
+            // 立即给出点击反馈：git 面板进入 busy，避免"没有反应"的观感
+            setGitPanel((g) => (g && g.id === id ? { ...g, cmdBusy: op } : g))
+            try {
+              const pv = await post('/git-action', { id, op, branch, remote, preview: true })
+              setGitConfirm({ op, id, branch: branch || null, cmd: pv.cmd, cwd: pv.cwd, error: null })
+            } catch (e) {
+              console.error('[devctl] git preview failed:', e)
+              const msg = `git ${op}: ${e.message}`
+              setNotice({ error: msg })
+              // 错误同时显示在 git 面板里（底部 notice 一行小字容易被忽略）
+              setGitPanel((g) => (g && g.id === id ? { ...g, error: msg } : g))
+            } finally {
+              setGitPanel((g) => (g && g.id === id ? { ...g, cmdBusy: null } : g))
+            }
+          }
+
+          const executeGitAction = async () => {
+            const cur = gitConfirm
+            if (!cur) return
+            setGitConfirm(null)
+            setBusy(`git:${cur.id}`)
+            try {
+              const r = await post('/git-action', {
+                id: cur.id, op: cur.op, branch: cur.branch || undefined,
+              })
+              setNotice({ text: `${cur.id} · git ${cur.op} ${r.ok === false ? '失败' : '完成'}${r.out ? `：${String(r.out).split('\n')[0].slice(0, 120)}` : ''}` })
+              await openGitPanel(cur.id) // 刷新详情（分支可能变了）
+              await loadProjects()       // Tier0 分支名也可能变了
+            } catch (e) {
+              setNotice({ error: `git ${cur.op} 失败: ${e.message}` })
+            } finally {
+              setBusy('')
+            }
+          }
+
+          const renderGitPanel = () => {
+            const d = gitPanel.data
+            const st = d && d.status
+            const br = d && d.branches
+            const tier0 = gitBranches[gitPanel.id]
+            const known = gitKnown[gitPanel.id]
+            const dirty = st && st.ok ? st.dirty : known ? known.dirty : null
+            const ahead = st && st.ok ? st.ahead : known ? known.ahead : null
+            const behind = st && st.ok ? st.behind : known ? known.behind : null
+            const curBranch = (st && st.ok && st.branch) || tier0?.branch || t('git.detached')
+            const isBusy = busy === `git:${gitPanel.id}`
+
+            // 分支列表：搜索过滤，当前分支永远置顶；不含"最近分支"区（保持简洁）
+            const qBranch = gitQuery.trim().toLowerCase()
+            const localAll = (br && br.local) || []
+            const match = (n) => !qBranch || n.toLowerCase().includes(qBranch)
+            const curDef = localAll.find((b) => b.current)
+            const others = localAll
+              .filter((b) => !b.current && match(b.name))
+              .sort((a, b) => a.name.localeCompare(b.name))
+            const remotes = ((br && br.remote) || []).filter((r) => match(r.name))
+
+            // GitLens 风格徽标
+            const badge = (text, color, title) =>
+              h('span', {
+                title,
+                style: {
+                  display: 'inline-flex', alignItems: 'center', padding: '1px 6px', marginLeft: 4,
+                  borderRadius: 999, fontSize: 10, fontWeight: 600,
+                  background: 'var(--dsw-alias-bg-layer-2)', color,
+                },
+              }, text)
+
+            // 分支行：整行可点（GitLens 式），右侧 hover 提示
+            // 分支行：整行可点；右侧差异徽标——
+            //   单向差异（只 ahead 或只 behind）绿色：可推送/可拉取
+            //   双向分叉或远端已删（gone）红色：需要人工合并处理
+            const trackBadge = (b) => {
+              if (!b.upstream) return null
+              if (b.gone) return badge('! ' + t('git.gone'), 'var(--dsw-alias-state-error-primary)', t('git.goneTip'))
+              if (b.ahead && b.behind) {
+                return badge(`↑${b.ahead} ↓${b.behind}`, 'var(--dsw-alias-state-error-primary)', t('git.diverged'))
+              }
+              if (b.ahead) return badge(`↑${b.ahead}`, 'var(--dsw-alias-state-success-primary)', t('git.aheadTip'))
+              if (b.behind) return badge(`↓${b.behind}`, 'var(--dsw-alias-state-success-primary)', t('git.behindTip'))
+              return null
+            }
+
+            const branchRow = (b, section) =>
+              h('div', {
+                key: `${section}-${b.name}`,
+                style: { display: 'flex', alignItems: 'center', gap: 6, padding: '3px 8px', borderRadius: 6 },
+              },
+                h('button', {
+                  className: b.current ? 'devctl-git-item is-current' : 'devctl-git-item',
+                  style: { display: 'flex', alignItems: 'center', gap: 6, padding: '2px 4px', borderRadius: 6, border: 'none', cursor: b.current ? 'default' : 'pointer', color: 'inherit', fontSize: 12, flex: 1, minWidth: 0 },
+                  disabled: b.current || isBusy,
+                  onClick: () => requestGitAction('switch', gitPanel.id, b.name),
+                },
+                  h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+                    b.current ? `● ${b.name}` : `  ${b.name}`),
+                  b.current ? h('span', { style: { ...styles.meta, fontSize: 10 } }, t('git.current')) : null),
+                trackBadge(b),
+                // 非当前分支落后远端 → 不切分支原地快进（fetch refspec，只 ff）
+                !b.current && b.behind && !b.ahead
+                  ? h('button', {
+                      style: { ...styles.btn, fontSize: 10, padding: '1px 6px' },
+                      disabled: isBusy || Boolean(gitPanel.cmdBusy),
+                      title: t('git.updateTip'),
+                      onClick: () => requestGitAction('update', gitPanel.id, b.name, remoteOf(b)),
+                    }, gitPanel.cmdBusy === 'update' ? '…' : `⟳ ${t('git.update')}`)
+                  : null,
+                // 删除本地分支（仅已合并；当前分支不给删）
+                !b.current
+                  ? h('button', {
+                      style: { ...styles.btn, ...styles.btnGhost, color: 'var(--dsw-alias-state-error-primary)', fontSize: 10, padding: '1px 5px' },
+                      disabled: isBusy || Boolean(gitPanel.cmdBusy),
+                      title: t('git.deleteTip'),
+                      onClick: () => requestGitAction('delete', gitPanel.id, b.name),
+                    }, '×')
+                  : null)
+
+            return h('div', { style: { ...styles.overlay, padding: '10px 12px' } },
+              h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 } },
+                h('div', null,
+                  h('div', { style: styles.confirmTitle }, `${t('git')} · ${gitPanel.id}`)),
+                h('div', { style: { display: 'flex', gap: 6 } },
+                  h('button', { style: styles.btn, disabled: isBusy, onClick: () => openGitPanel(gitPanel.id), title: t('git.refresh') }, '⟳'),
+                  h('button', { style: styles.btn, onClick: () => setGitPanel(null) }, t('back')))),
+
+              // 状态卡：当前分支 + 徽标
+              h('div', { style: styles.conStatus },
+                h('div', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
+                  h('span', { style: { ...styles.dot, ...(dirty ? { background: 'var(--dsw-alias-state-warn-primary)' } : {}) } }),
+                  h('b', { style: { fontSize: 13 } }, `⎇ ${curBranch}`),
+                  ahead != null && ahead > 0 ? badge(`↑${ahead}`, 'var(--dsw-alias-state-success-primary)', t('git.aheadTip')) : null,
+                  behind != null && behind > 0 ? badge(`↓${behind}`, 'var(--dsw-alias-state-warn-primary)', t('git.behindTip')) : null,
+                  dirty != null && dirty > 0
+                    ? badge(`±${dirty}`, 'var(--dsw-alias-state-warn-primary)', t('git.dirty'))
+                    : dirty === 0 ? badge('✓', 'var(--dsw-alias-state-success-primary)', t('git.clean')) : null),
+                h('div', { style: styles.meta },
+                  [st && st.ok ? st.upstream || t('git.noUpstream') : null,
+                   st && st.ok && st.untracked ? `${st.untracked} ${t('git.untracked')}` : null].filter(Boolean).join(' · '))),
+
+              // 操作栏：behind>0 时 pull 高亮
+              h('div', { style: styles.conToolbar },
+                h('button', { style: styles.btn, disabled: isBusy, title: t('git.confirm.fetch'), onClick: () => requestGitAction('fetch', gitPanel.id) }, `⟳ ${t('git.fetch')}`),
+                h('button', {
+                  style: behind > 0 ? { ...styles.btn, ...styles.btnRun } : styles.btn,
+                  disabled: isBusy, title: t('git.confirm.pull'),
+                  onClick: () => requestGitAction('pull', gitPanel.id),
+                }, `⇣ ${t('git.pull')}${behind > 0 ? ` (${behind})` : ''}`)),
+
+              gitPanel.loading ? h('div', { style: { ...styles.meta, padding: '12px 0' } }, t('loading')) : null,
+              gitPanel.error ? h('div', { style: { color: 'var(--dsw-alias-state-error-primary)', padding: '8px 0' } }, gitPanel.error) : null,
+              st && !st.ok ? h('div', { style: { ...styles.meta, padding: '8px 0' } }, t('git.nonGit')) : null,
+
+              // 分支列表（有数据才渲染）
+              br && br.ok
+                ? h('div', null,
+                    // 搜索框（分支多时才有意义，>8 个显示）
+                    localAll.length + ((br.remote && br.remote.length) || 0) > 8
+                      ? h('div', { style: { marginTop: 6 } },
+                          h('input', {
+                            style: styles.search, value: gitQuery, placeholder: t('git.searchBranch'),
+                            onChange: (e) => setGitQuery(e.target.value),
+                          }))
+                      : null,
+                    curDef && match(curDef.name)
+                      ? h('div', { style: { marginTop: 8 } },
+                          branchRow(curDef, 'cur'))
+                      : null,
+                    others.length
+                      ? h('div', null,
+                          h('div', { style: styles.taskGroupLabel }, `${t('git.local')} (${others.length})`),
+                          others.map((b) => branchRow(b, 'local')))
+                      : null,
+                    remotes.length
+                      ? h('div', { style: { marginTop: 10 } },
+                          h('div', { style: styles.taskGroupLabel }, `${t('git.remote')} (${remotes.length}) · ${t('git.remoteHint')}`),
+                          remotes.slice(0, 50).map((r) => {
+                            // 去掉 origin/ 前缀：git switch <name> 会 DWIM 自动建本地跟踪分支
+                            const short = r.name.replace(/^[^/]+\//, '')
+                            const exists = localAll.some((b) => b.name === short)
+                            return h('button', {
+                              key: `remote-${r.name}`,
+                              className: 'devctl-git-item',
+                              style: { display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px', borderRadius: 6, border: 'none', cursor: 'pointer', color: 'inherit', fontSize: 12 },
+                              disabled: isBusy,
+                              onClick: () => requestGitAction('switch', gitPanel.id, short),
+                              title: exists ? t('git.switchTo') + short : `${t('git.trackCreate')} ${short}`,
+                            },
+                              h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, `  ${short}`),
+                              h('span', { style: { ...styles.meta, fontSize: 10 } }, exists ? '' : '+track'))
+                          }))
+                      : null)
+                : null)
+          }
+
+          const renderGitConfirm = () => {
+            const isDelete = gitConfirm.op === 'delete'
+            return h('div', { style: styles.overlay },
+              h('div', { style: { ...styles.confirmTitle, ...(isDelete ? { color: 'var(--dsw-alias-state-error-primary)' } : {}) } },
+                t(`git.confirm.${gitConfirm.op}`)),
+              h('div', { ...styles.meta, marginBottom: 8 }, t('confirmHint')),
+              isDelete
+                ? h('div', { style: { color: 'var(--dsw-alias-state-warn-primary)', margin: '6px 0' } }, `! ${t('git.deleteHint')}`)
+                : null,
+              kv(t('project'), gitConfirm.id),
+              gitConfirm.branch ? kv(t('git.branch'), gitConfirm.branch) : null,
+              kv(t('cwd'), gitConfirm.cwd),
+              h('div', { style: styles.cmdLabel }, t('command')),
+              h('pre', { style: styles.pre }, gitConfirm.cmd),
+              h('div', { style: styles.actions },
+                h('button', { style: styles.btn, onClick: () => setGitConfirm(null) }, t('cancel')),
+                h('button', {
+                  style: isDelete
+                    ? { ...styles.btn, ...styles.btnStop }
+                    : { ...styles.btn, ...styles.btnRun },
+                  onClick: executeGitAction,
+                }, t('execute'))))
+          }
+
           const renderConfirm = () => {
             const { mode, project, task, plan, loading: planLoading, error: planError } = confirm
             const isRelease = task.section === 'release'
@@ -892,6 +1209,20 @@ window.__ModuleLoader__.load({
                         }, `${last.status === 'success' ? '✓' : '✗'} ${last.durationMs ? fmt(Math.round(last.durationMs / 1000)) : ''}`)
                       : null,
                     h('div', { style: styles.meta }, meta)),
+                  gitBranches[p.id]
+                    ? h('button', {
+                        style: styles.btn,
+                        title: t('git'),
+                        onClick: () => openGitPanel(p.id),
+                      }, (() => {
+                        const g = gitBranches[p.id]
+                        const kn = gitKnown[p.id]
+                        const label = g.detached ? (g.sha || 'detached') : g.branch
+                        const mark =
+                          kn && kn.dirty ? '±' : kn && kn.ahead > 0 ? '↑' : kn && kn.behind > 0 ? '↓' : ''
+                        return `⎇ ${label}${mark}`
+                      })())
+                    : null,
                   live || building
                     ? h('button', { style: styles.btn, onClick: () => openConsole((live || building[0]).runId) }, t('console'))
                     : null,
@@ -980,9 +1311,9 @@ window.__ModuleLoader__.load({
                     h('div', { style: { display: 'flex', gap: 6 } },
                       h('button', {
                         style: styles.btn,
-                        onClick: () => { setConfirm(null); setCon(null); loadProjects(); loadStatus() },
+                        onClick: () => { setConfirm(null); setCon(null); setGitPanel(null); setGitConfirm(null); loadProjects(); loadStatus() },
                       }, t('refresh')),
-                      h('button', { style: styles.btn, onClick: () => { setConfirm(null); setCon(null); setOpen(false) } }, '×'))),
+                      h('button', { style: styles.btn, onClick: () => { setConfirm(null); setCon(null); setGitPanel(null); setGitConfirm(null); setOpen(false) } }, '×'))),
                   h('div', { style: styles.searchWrap },
                     h('input', {
                       style: styles.search, value: query, placeholder: t('search'),
@@ -990,8 +1321,10 @@ window.__ModuleLoader__.load({
                     })),
                   h('div', { style: styles.body }, rows),
                   noticeBar(),
+                  gitPanel ? renderGitPanel() : null,
                   confirm ? renderConfirm() : null,
-                  con ? renderConsole() : null)
+                  con ? renderConsole() : null,
+                  gitConfirm ? renderGitConfirm() : null)
               : null,
             h('button', {
               style: styles.fab,

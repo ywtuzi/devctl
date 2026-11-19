@@ -515,8 +515,92 @@ async function cmdPorts(opts, ctx) {
   console.log(renderTable(['端口', '状态'], rows))
 }
 
-function cmdDoctor(opts, ctx) {
-  const cfg = ctx.config
+/* ------------------------------ git 子命令 ------------------------------ */
+
+async function cmdGit(opts, ctx) {
+  const sub = opts._[1]
+  const id = opts._[2]
+  const arg = opts._[3]
+  const { readBranchFast, gitStatusDetail, gitBranches, gitFetch, gitPull, gitSwitch, gitUpdateBranch, gitDeleteBranch, mapLimit } = await import('../src/git.js')
+
+  if (sub === 'status') {
+    // devctl git status [--json]：全部项目的分支速览（零 spawn 直读）
+    const projects = scan(ctx.root, ctx.config)
+    const rows = projects.map((p) => {
+      const b = readBranchFast(p.absPath)
+      return { id: p.id, git: Boolean(b), branch: b?.branch || null, detached: Boolean(b?.detached) }
+    })
+    if (opts.json) return console.log(JSON.stringify(rows, null, 2))
+    for (const r of rows) {
+      console.log(
+        `${padEnd(r.id, 34)} ${r.git ? (r.detached ? c.yellow('(detached)') : c.green(r.branch || '?')) : c.dim('(非 git)')}`
+      )
+    }
+    return
+  }
+
+  if (!id) fail('用法: devctl git <status|branches|fetch|pull|switch> <项目ID> [分支名]')
+  const projects = scan(ctx.root, ctx.config)
+  const project = requireProject(projects, id)
+
+  if (sub === 'branches') {
+    const r = await gitBranches(project.absPath)
+    if (!r.ok) fail(r.error)
+    if (opts.json) return console.log(JSON.stringify(r, null, 2))
+    for (const b of r.local) console.log(`${b.current ? c.green('* ') : '  '}${b.name}`)
+    for (const b of r.remote) console.log(c.dim(`  remotes/${b.name}`))
+    return
+  }
+
+  if (sub === 'fetch') {
+    const r = await gitFetch(project.absPath)
+    if (opts.json) return console.log(JSON.stringify({ ok: r.ok, out: r.out.trim(), error: r.err }))
+    if (!r.ok) fail(r.err || 'fetch 失败')
+    console.log(`${c.green('✓')} ${project.id} fetch 完成`)
+    return
+  }
+
+  if (sub === 'pull') {
+    const r = await gitPull(project.absPath)
+    if (opts.json) return console.log(JSON.stringify({ ok: r.ok, out: r.out.trim(), error: r.err }))
+    if (!r.ok) fail(r.err || 'pull 失败')
+    console.log(r.out.trim() || `${c.green('✓')} ${project.id} 已是最新`)
+    return
+  }
+
+  if (sub === 'switch') {
+    if (!arg) fail('用法: devctl git switch <项目ID> <分支名>')
+    const r = await gitSwitch(project.absPath, arg)
+    if (opts.json) return console.log(JSON.stringify({ ok: r.ok, out: r.out.trim(), error: r.err }))
+    if (!r.ok) fail(r.err || 'switch 失败')
+    console.log(`${c.green('✓')} ${project.id} → ${arg}`)
+    return
+  }
+
+  if (sub === 'update') {
+    // 不切分支，把非当前分支快进到远端（fetch refspec，只 ff）
+    if (!arg) fail('用法: devctl git update <项目ID> <分支名>')
+    const r = await gitUpdateBranch(project.absPath, arg)
+    if (opts.json) return console.log(JSON.stringify({ ok: r.ok, out: r.out.trim(), error: r.err }))
+    if (!r.ok) fail(r.err || 'update 失败')
+    console.log(`${c.green('✓')} ${project.id} · ${arg} 已快进到远端`)
+    return
+  }
+
+  if (sub === 'delete') {
+    // 删本地分支；-d 只删已合并的，未合并会被拒绝（防误删丢提交）
+    if (!arg) fail('用法: devctl git delete <项目ID> <分支名>')
+    const r = await gitDeleteBranch(project.absPath, arg)
+    if (opts.json) return console.log(JSON.stringify({ ok: r.ok, out: r.out.trim(), error: r.err }))
+    if (!r.ok) fail(r.err || 'delete 失败')
+    console.log(`${c.green('✓')} ${project.id} · 已删除本地分支 ${arg}`)
+    return
+  }
+
+  fail(`未知 git 子命令: ${sub}\n  可用: status / branches / fetch / pull / switch`)
+}
+
+function cmdDoctor(opts, ctx) {  const cfg = ctx.config
   const versions = listNodeVersions(cfg.toolchain.nvmRoot)
   const java = resolveJava(cfg.toolchain.javaHome)
   const maven = resolveMaven(cfg.toolchain.mavenHome)
@@ -591,6 +675,14 @@ ${c.bold('devctl')} —— 多仓工作区项目运行器
   ${c.blue('ports')} [端口...]          端口占用检查
   ${c.blue('exclude')} <项目>           剔除项目（写 .devctl/prefs.json）
   ${c.blue('include')} <项目>           选入项目（覆盖 config 的 exclude）
+  ${c.blue('git')} <子命令> [项目] [分支] git 集成：
+                     status  全部项目分支速览（零开销直读）
+                     branches <项目>        本地/远端分支列表
+                     fetch <项目>           拉取远端（--prune）
+                     pull <项目>            拉取并快进（--ff-only，脏工作区会拒绝）
+                     switch <项目> <分支>   切换分支
+                     update <项目> <分支>   不切分支，把该分支快进到远端（fetch ff）
+                     delete <项目> <分支>   删除本地分支（仅已合并，-d）
   ${c.blue('doctor')}                   工具链自检
 
 选项：
@@ -648,6 +740,8 @@ async function main() {
       return cmdToggle(opts, ctx, 'exclude')
     case 'include':
       return cmdToggle(opts, ctx, 'include')
+    case 'git':
+      return cmdGit(opts, ctx)
     case 'doctor':
       return cmdDoctor(opts, ctx)
     default:

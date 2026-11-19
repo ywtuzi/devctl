@@ -41,7 +41,7 @@
     "vendor": "node scripts/vendor.mjs",
     "vendor:check": "node scripts/vendor.mjs --check",
     "pretest": "node scripts/vendor.mjs --check",
-    "test": "node test/util.mjs && node test/detectors.mjs && node test/scan.mjs && node test/runid.mjs && node test/ports.mjs && node test/module.mjs",
+    "test": "node test/util.mjs && node test/detectors.mjs && node test/scan.mjs && node test/runid.mjs && node test/ports.mjs && node test/module.mjs && node test/git.mjs",
     "test:util": "node test/util.mjs",
     "test:detectors": "node test/detectors.mjs",
     "test:scan": "node test/scan.mjs",

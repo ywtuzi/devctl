@@ -70,7 +70,22 @@ Maven → GBK，Node 工具 → UTF-8。用流式 `TextDecoder` 避免多字节�
 端口，但**不 spawn**。面板的二次确认卡片就是渲染这份结果，
 保证用户看到的就是真正会执行的那条命令，而不是二次拼出来的近似值。
 
+### 8. git 三层接入（性能驱动）
+
+实测本机 spawn 一个 git 进程 ≈ 900ms（哪怕 rev-parse），17 仓并发墙钟 ~1.9s；
+而 node 直读 `.git/HEAD` 17 仓只要 4ms。所以 git 功能按成本分三层：
+
+- **Tier 0 分支速览**：`readBranchFast()` 直读 `.git/HEAD`（支持 worktree/submodule 的
+  `.git` 文件、子目录向上找仓库根），随 `/projects` 热路径返回，零 spawn。
+- **Tier 1 按需详情**：`gitStatusDetail()` 一次 `status -sb -unormal` 拿全
+  ahead/behind/脏数；**用户点开该项目的 git 面板才执行**，30s 缓存。
+- **Tier 2 显式操作**：fetch / pull --ff-only / switch，面板一律先预演（展示真实命令）
+  确认后经 CLI 执行，与终端同路径。脏工作区时 git 自身拒绝，错误原样带回。
+
+不做 commit/push（面板不做任何写仓库操作，pull/switch 只动工作区）。
+
 ## 模块职责
+
 
 | 文件 | 职责 |
 |---|---|
@@ -80,6 +95,7 @@ Maven → GBK，Node 工具 → UTF-8。用流式 `TextDecoder` 避免多字节�
 | `src/scan.js` | 目录遍历、override 合并、端口冲突检测 |
 | `src/toolchain.js` | nvm 版本发现、Java/Maven 定位、子进程 env 组装 |
 | `src/runner.js` | 命令规格、spawn、解码、日志、运行记录、停止 |
+| `src/git.js` | git 集成：零 spawn 分支直读 / 按需 status / fetch·pull·switch |
 | `src/daemon.js` | 长驻任务守护进程 |
 | `src/ports.js` | 端口占用探测（connect 优先） |
 | `src/ui.js` | 表格与颜色 |

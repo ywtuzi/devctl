@@ -151,17 +151,19 @@ async function loadMods(cli) {
   const ver = await srcVersion(srcDir)
   if (modsCache && modsCache.dir === srcDir && modsCache.ver === ver) return modsCache.value
   const url = (f) => `${pathToFileURL(join(srcDir, f)).href}?v=${ver}`
-  const [configMod, scanMod, planMod, runnerMod] = await Promise.all([
+  const [configMod, scanMod, planMod, runnerMod, gitMod] = await Promise.all([
     import(url('config.js')),
     import(url('scan.js')),
     import(url('plan.js')),
     import(url('runner.js')),
+    import(url('git.js')),
   ])
-  modsCache = { dir: srcDir, ver, value: { configMod, scanMod, planMod, runnerMod } }
+  modsCache = { dir: srcDir, ver, value: { configMod, scanMod, planMod, runnerMod, gitMod } }
   return modsCache.value
 }
 
 let projectsCache = null
+let gitDetailCache = null
 
 const toWire = (p) => ({
   id: p.id,
@@ -409,11 +411,19 @@ export function apply(ctx, config) {
       if (action === 'projects' && method === 'GET') {
         try {
           const { projects, excluded } = await getScan(root, cli)
+          const { gitMod } = await loadMods(cli)
+          // Tier 0 分支速览：直读 .git/HEAD，17 仓 ~4ms，可以随热路径走
+          const branches = {}
+          for (const p of projects) {
+            const b = gitMod.readBranchFast(p.absPath)
+            if (b) branches[p.id] = b
+          }
           return send(res, 200, {
             root,
             summary: summarize(projects),
             projects: projects.map(toWire),
             excluded,
+            gitBranches: branches,
           })
         } catch (e) {
           // 宿主内失败时退回子进程，保证仍能用；留一条日志便于排查版本不一致
@@ -572,6 +582,72 @@ export function apply(ctx, config) {
         const body = await readBody(req)
         if (!body.id) return send(res, 400, { error: '缺少 id' })
         const data = await runCli(cli, root, [action, body.id, '--json'], 30000)
+        projectsCache = null
+        return send(res, 200, data)
+      }
+
+      if (action === 'git-detail' && method === 'GET') {
+        // Tier 1：单仓详情（status + 分支列表），点击项目 git 面板时才调。
+        // spawn 一个 git ~1s（慢机器），带 30s 缓存，git-action 后失效。
+        const id = url.searchParams.get('id')
+        if (!id || !/^[A-Za-z0-9_./-]+$/.test(id)) return send(res, 400, { error: '非法 id' })
+        const { projects } = await getScan(root, cli)
+        const project = projects.find((p) => p.id === id)
+        if (!project) return send(res, 404, { error: `项目不存在: ${id}` })
+        try {
+          const { gitMod } = await loadMods(cli)
+          if (!gitDetailCache || gitDetailCache.id !== id || Date.now() - gitDetailCache.at > 30000) {
+            const [status, branches] = await Promise.all([
+              gitMod.gitStatusDetail(project.absPath),
+              gitMod.gitBranches(project.absPath),
+            ])
+            gitDetailCache = { id, at: Date.now(), value: { status, branches } }
+          }
+          return send(res, 200, { id, ...gitDetailCache.value })
+        } catch (e) {
+          return send(res, 500, { error: String((e && e.message) || e) })
+        }
+      }
+
+      if (action === 'git-action' && method === 'POST') {
+        // Tier 2：写操作全部走 CLI（与终端同路径）。支持 preview 只回显命令不执行。
+        const body = await readBody(req)
+        const { id, op } = body
+        if (!id || !op) return send(res, 400, { error: '缺少 id 或 op' })
+        if (!['fetch', 'pull', 'switch', 'update', 'delete'].includes(op)) {
+          return send(res, 400, { error: `不支持的操作: ${op}` })
+        }
+        if ((op === 'switch' || op === 'update' || op === 'delete') && !body.branch) {
+          return send(res, 400, { error: `${op} 需要 branch` })
+        }
+        if (body.branch && !/^[A-Za-z0-9_./-]+$/.test(body.branch)) {
+          return send(res, 400, { error: '非法 branch' })
+        }
+        // update 的远端名由客户端从分支 upstream 传入（面板里已有，
+        // 预演不再为此 spawn git——慢机器上一次 git ~1s，预演必须毫秒级返回）
+        if (body.remote && !/^[A-Za-z0-9_.\\-]+$/.test(body.remote)) {
+          return send(res, 400, { error: '非法 remote' })
+        }
+        if (body.preview) {
+          const { gitMod } = await loadMods(cli)
+          const cmd =
+            op === 'update'
+              ? gitMod.gitCommandPreview.update(body.branch, body.remote || 'origin')
+              : gitMod.gitCommandPreview[op](body.branch)
+          const warn =
+            op === 'delete'
+              ? '只删除已合并分支；未合并分支会被拒绝（防止丢提交）'
+              : null
+          return send(res, 200, {
+            id, op, cmd, warn,
+            cwd: (await getScan(root, cli)).projects.find((p) => p.id === id)?.absPath || null,
+          })
+        }
+        const args = ['git', op, id]
+        if (op === 'switch' || op === 'update' || op === 'delete') args.push(body.branch)
+        args.push('--json')
+        const data = await runCli(cli, root, args, 300000)
+        gitDetailCache = null
         projectsCache = null
         return send(res, 200, data)
       }

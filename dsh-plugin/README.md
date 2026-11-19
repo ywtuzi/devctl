@@ -73,6 +73,18 @@ plugin_manager install_bundle  target = <本仓库路径>/dsh-plugin
         cliPath: '<devctl/bin/devctl.js 绝对路径>'
 ```
 
+## git 集成
+
+每行项目旁有 `⎇ 分支名` chip（零开销直读 `.git/HEAD`，随 `/projects` 一起返回）。
+点开是该项目的小面板：
+
+- 当前分支、upstream、↑ahead ↓behind、脏文件数（点开时才拉，30s 缓存——spawn git ~1s 不进热路径）
+- 本地分支列表点选即切换；远端分支只读展示
+- fetch / pull --ff-only / switch 都先弹**命令预演确认卡**再执行，经 CLI 与终端同路径
+- 不做 commit/push
+
+CLI 侧同能力：`devctl git status|branches|fetch|pull|switch`。
+
 ## 性能
 
 关键约束是 **`spawn` 一个 node 进程要 ~300ms**，而扫描本身只要 60–80ms。所以热路径全部放在宿主进程内，只有写操作才起子进程：
