@@ -1223,24 +1223,14 @@ window.__ModuleLoader__.load({
                         return `⎇ ${label}${mark}`
                       })())
                     : null,
-                  live || building
-                    ? h('button', { style: styles.btn, onClick: () => openConsole((live || building[0]).runId) }, t('console'))
-                    : null,
+                  // 运行中实例的 停止/控制台 按钮只在顶部「运行中/打包中」区展示，
+                  // 普通列表行不再重复（meta 文案已标明运行状态）
                   taskCount
                     ? h('button', {
                         style: styles.btn, disabled: isBusy,
                         title: isOpen ? t('fewer') : t('more'),
                         onClick: () => setExpanded(isOpen ? null : p.id),
                       }, isOpen ? '▴' : '▾')
-                    : null,
-                  live
-                    ? h('button', {
-                        style: { ...styles.btn, ...styles.btnStop }, disabled: isBusy,
-                        onClick: () => act(p.id, async () => {
-                          await post('/stop', { projectId: p.id })
-                          return `${p.id} 已停止`
-                        }),
-                      }, t('stop'))
                     : null,
                   h('button', { style: { ...styles.btn, ...styles.btnGhost }, disabled: isBusy, title: t('drop'), onClick: () => toggleMember(p.id, 'exclude') }, '×'))
               )
