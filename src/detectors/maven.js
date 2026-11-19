@@ -65,10 +65,22 @@ export function detect(dir, ctx) {
   // 顺带把所有模块的 profile 收上来：正式包/测试包通常就是靠 -P 选的，
   // 只读根 pom 会漏掉只声明在子模块里的 release-dev / release-product。
   const stripPM = (s) => s.replace(/<pluginManagement>[\s\S]*?<\/pluginManagement>/g, '')
+  // 从声明插件的 pom 文本里抠 spring-boot-maven-plugin 的版本号。
+  // 插件可能声明在 <profiles> 里（hs-cloud-auth 的 release-local 就是），
+  // 默认 profile 集下前缀解析不了、pluginManagement 的版本兜底也拿不到，
+  // 所以 run goal 用全限定坐标 + 显式版本，两样都不依赖。
+  const bootPluginVersion = (xmlText) => {
+    const idx = xmlText.indexOf('<artifactId>spring-boot-maven-plugin</artifactId>')
+    if (idx < 0) return null
+    const m = xmlText.slice(idx, idx + 400).match(/<version>\s*([^<]+?)\s*<\/version>/)
+    return m ? m[1] : null
+  }
   const profiles = [...new Set(profileIds(xml))]
   let runModule = null
+  let runXml = null
   if (packaging !== 'pom' && stripPM(xml).includes('spring-boot-maven-plugin')) {
     runModule = '.'
+    runXml = xml
   }
   for (const m of modules) {
     const mp = join(dir, m, 'pom.xml')
@@ -84,6 +96,7 @@ export function detect(dir, ctx) {
     }
     if (!runModule && stripPM(moduleXml).includes('spring-boot-maven-plugin')) {
       runModule = m
+      runXml = moduleXml
     }
   }
 
@@ -99,15 +112,30 @@ export function detect(dir, ctx) {
 
   const tasks = {}
   if (runnable) {
+    // 多模块必须用 -f 指向子模块 pom，不能用 `-pl <module> -am`：
+    //  1) goal 前缀按 cwd 的根 pom 解析，插件只声明在子模块时直接
+    //     "No plugin found for prefix 'spring-boot'"；
+    //  2) -am 会让 goal 在 reactor 每个模块上各执行一次，聚合根没有主类必挂。
+    // 插件版本抠得到就进一步用全限定坐标（前缀在 profile 声明场景下也解析不了）。
+    // 代价：兄弟模块改从本地仓库解析，首次运行前需先执行 install 任务。
+    const bootVer = runXml ? bootPluginVersion(runXml) : null
+    const bootGoal = bootVer
+      ? `org.springframework.boot:spring-boot-maven-plugin:${bootVer}:run`
+      : 'spring-boot:run'
     const runArgs =
-      runModule === '.' ? ['spring-boot:run'] : ['-pl', runModule, '-am', 'spring-boot:run']
+      runModule === '.'
+        ? [bootGoal]
+        : ['-f', `${runModule.replace(/\\/g, '/')}/pom.xml`, bootGoal]
     // 不写死展示文案：只给机器可读事实（kind + detail），文案由展示层决定
     const detail = runModule === '.' ? null : runModule
+    const runNote =
+      runModule === '.' ? null : `多模块项目：首次运行前先执行 install（兄弟模块走本地仓库）`
     tasks.run = {
       name: 'run',
       kind: 'run',
       type: 'mvn',
       detail,
+      note: runNote,
       args: [...runArgs],
       encoding: 'gbk',
     }
@@ -119,6 +147,7 @@ export function detect(dir, ctx) {
       type: 'mvn',
       debug: true,
       detail,
+      note: runNote,
       args: [...runArgs],
       encoding: 'gbk',
     }
