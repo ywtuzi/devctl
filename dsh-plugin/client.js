@@ -753,7 +753,7 @@ window.__ModuleLoader__.load({
             }
           }
 
-          const executeGitAction = async () => {
+          const executeGitAction = async (force = false) => {
             const cur = gitConfirm
             if (!cur) return
             setGitConfirm(null)
@@ -761,12 +761,26 @@ window.__ModuleLoader__.load({
             try {
               const r = await post('/git-action', {
                 id: cur.id, op: cur.op, branch: cur.branch || undefined,
+                force: force === true ? true : undefined,
               })
-              setNotice({ text: `${cur.id} · git ${cur.op} ${r.ok === false ? '失败' : '完成'}${r.out ? `：${String(r.out).split('\n')[0].slice(0, 120)}` : ''}` })
+              if (r.ok === false) {
+                // 失败原因在 r.error（r.out 失败时为空）。必须同时写进 git 面板：
+                // git 面板是 inset:0 的覆盖层，会把面板底部的 notice 条整个挡住，
+                // 只写 notice 用户什么都看不到。失败时也不刷新面板，保留错误现场
+                const reason = String(r.error || r.out || '').split('\n')[0].slice(0, 200) || '未知原因'
+                const hint = cur.op === 'delete' ? '（未合并分支受保护；确认放弃该分支请到终端执行 git branch -D）' : ''
+                const msg = `git ${cur.op} 失败: ${reason}${hint}`
+                setNotice({ error: msg })
+                setGitPanel((g) => (g && g.id === cur.id ? { ...g, error: msg } : g))
+                return
+              }
+              setNotice({ text: `${cur.id} · git ${cur.op} 完成${r.out ? `：${String(r.out).split('\n')[0].slice(0, 120)}` : ''}` })
               await openGitPanel(cur.id) // 刷新详情（分支可能变了）
               await loadProjects()       // Tier0 分支名也可能变了
             } catch (e) {
-              setNotice({ error: `git ${cur.op} 失败: ${e.message}` })
+              const msg = `git ${cur.op} 失败: ${e.message}`
+              setNotice({ error: msg })
+              setGitPanel((g) => (g && g.id === cur.id ? { ...g, error: msg } : g))
             } finally {
               setBusy('')
             }
@@ -947,11 +961,23 @@ window.__ModuleLoader__.load({
               h('pre', { style: styles.pre }, gitConfirm.cmd),
               h('div', { style: styles.actions },
                 h('button', { style: styles.btn, onClick: () => setGitConfirm(null) }, t('cancel')),
+                isDelete
+                  ? h('button', {
+                      style: {
+                        ...styles.btn,
+                        borderColor: 'var(--dsw-alias-state-error-primary)',
+                        background: 'var(--dsw-alias-state-error-primary)',
+                        color: '#fff',
+                      },
+                      title: '强制删除：git branch -D。未合并分支独有的提交会被丢弃，仅在确认已在别处保留后使用',
+                      onClick: () => executeGitAction(true),
+                    }, '强制删除')
+                  : null,
                 h('button', {
                   style: isDelete
                     ? { ...styles.btn, ...styles.btnStop }
                     : { ...styles.btn, ...styles.btnRun },
-                  onClick: executeGitAction,
+                  onClick: () => executeGitAction(false),
                 }, t('execute'))))
           }
 
@@ -1299,6 +1325,18 @@ window.__ModuleLoader__.load({
                       h('div', { style: { fontWeight: 600 } }, t('title')),
                       h('div', { style: styles.meta }, confirm ? t('confirmHint') : con ? t('console') : counts)),
                     h('div', { style: { display: 'flex', gap: 6 } },
+                      h('button', {
+                        style: styles.btn,
+                        title: '用系统默认编辑器打开 devctl.config.json',
+                        onClick: async () => {
+                          try {
+                            const r = await post('/open-config', {})
+                            setNotice({ text: `已在编辑器中打开：${r.file}` })
+                          } catch (e) {
+                            setNotice({ error: `打开配置失败: ${e.message}` })
+                          }
+                        },
+                      }, '⚙'),
                       h('button', {
                         style: styles.btn,
                         onClick: () => { setConfirm(null); setCon(null); setGitPanel(null); setGitConfirm(null); loadProjects(); loadStatus() },

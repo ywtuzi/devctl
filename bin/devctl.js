@@ -588,12 +588,13 @@ async function cmdGit(opts, ctx) {
   }
 
   if (sub === 'delete') {
-    // 删本地分支；-d 只删已合并的，未合并会被拒绝（防误删丢提交）
-    if (!arg) fail('用法: devctl git delete <项目ID> <分支名>')
-    const r = await gitDeleteBranch(project.absPath, arg)
+    // 删本地分支；默认 -d 只删已合并的，未合并会被拒绝（防误删丢提交）。
+    // --force → -D：放弃未合并分支（面板「强制删除」按钮走这条）
+    if (!arg) fail('用法: devctl git delete <项目ID> <分支名> [--force]')
+    const r = await gitDeleteBranch(project.absPath, arg, Boolean(opts.force))
     if (opts.json) return console.log(JSON.stringify({ ok: r.ok, out: r.out.trim(), error: r.err }))
     if (!r.ok) fail(r.err || 'delete 失败')
-    console.log(`${c.green('✓')} ${project.id} · 已删除本地分支 ${arg}`)
+    console.log(`${c.green('✓')} ${project.id} · 已${opts.force ? '强制' : ''}删除本地分支 ${arg}`)
     return
   }
 

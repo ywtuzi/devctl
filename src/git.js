@@ -192,11 +192,13 @@ export async function gitSwitch(absPath, branch) {
 }
 
 /**
- * 删除本地分支。用 -d（而非 -D）：未合并的分支 git 会拒绝，防止误删丢提交。
+ * 删除本地分支。默认用 -d（而非 -D）：未合并的分支 git 会拒绝，防止误删丢提交。
  * 当前分支 git 也会拒绝（-d 与 -D 都不允许删 HEAD 所在分支）。
+ * force=true 时改用 -D：用于「提交已在别处重新应用（cherry-pick）、原件确认放弃」的场景，
+ * 由面板上的「强制删除」按钮显式触发，普通删除永远走 -d。
  */
-export async function gitDeleteBranch(absPath, branch) {
-  return git(absPath, ['branch', '-d', branch], 60000)
+export async function gitDeleteBranch(absPath, branch, force = false) {
+  return git(absPath, ['branch', force ? '-D' : '-d', branch], 60000)
 }
 
 /**
@@ -219,7 +221,7 @@ export const gitCommandPreview = {
   pull: () => 'git pull --ff-only',
   switch: (branch) => `git switch ${branch}`,
   update: (branch, remote = 'origin') => `git fetch ${remote} ${branch}:${branch}`,
-  delete: (branch) => `git branch -d ${branch}`,
+  delete: (branch, force = false) => `git branch -${force ? 'D' : 'd'} ${branch}`,
 }
 
 /* ------------------------------ 并发限流 ------------------------------ */

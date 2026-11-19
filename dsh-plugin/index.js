@@ -408,6 +408,27 @@ export function apply(ctx, config) {
         return send(res, 200, { root, cli })
       }
 
+      // 用系统默认编辑器打开 devctl.config.json（面板 ⚙ 按钮）
+      if (action === 'open-config' && method === 'POST') {
+        const file = join(root, 'devctl.config.json')
+        if (!existsSync(file)) {
+          return send(res, 404, { error: `配置文件不存在: ${file}` })
+        }
+        if (process.platform === 'win32') {
+          // start 是 cmd 内建命令，必须走 cmd /c；引号手工拼 + verbatim，
+          // 避免 node 的参数转义规则和 cmd 自己的解析规则互相打架
+          spawn(process.env.Comspec || 'cmd.exe', ['/c', `start "" "${file}"`], {
+            detached: true,
+            stdio: 'ignore',
+            windowsVerbatimArguments: true,
+          }).unref()
+        } else {
+          const opener = process.platform === 'darwin' ? 'open' : 'xdg-open'
+          spawn(opener, [file], { detached: true, stdio: 'ignore' }).unref()
+        }
+        return send(res, 200, { opened: true, file })
+      }
+
       if (action === 'projects' && method === 'GET') {
         try {
           const { projects, excluded } = await getScan(root, cli)
@@ -630,13 +651,18 @@ export function apply(ctx, config) {
         }
         if (body.preview) {
           const { gitMod } = await loadMods(cli)
+          const force = op === 'delete' && body.force === true
           const cmd =
             op === 'update'
               ? gitMod.gitCommandPreview.update(body.branch, body.remote || 'origin')
-              : gitMod.gitCommandPreview[op](body.branch)
+              : op === 'delete'
+                ? gitMod.gitCommandPreview.delete(body.branch, force)
+                : gitMod.gitCommandPreview[op](body.branch)
           const warn =
             op === 'delete'
-              ? '只删除已合并分支；未合并分支会被拒绝（防止丢提交）'
+              ? force
+                ? '强制删除未合并分支：该分支独有的提交会被丢弃（确认已在别处保留再用）'
+                : '只删除已合并分支；未合并分支会被拒绝（防止丢提交）'
               : null
           return send(res, 200, {
             id, op, cmd, warn,
@@ -645,6 +671,8 @@ export function apply(ctx, config) {
         }
         const args = ['git', op, id]
         if (op === 'switch' || op === 'update' || op === 'delete') args.push(body.branch)
+        // force 只对 delete 生效（-D），其余操作忽略，避免误传导致命令语义漂移
+        if (op === 'delete' && body.force === true) args.push('--force')
         args.push('--json')
         const data = await runCli(cli, root, args, 300000)
         gitDetailCache = null
