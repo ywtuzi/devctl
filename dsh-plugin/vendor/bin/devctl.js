@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { findRoot, loadConfig, statePaths, loadPrefs, savePrefs, togglePrefs } from '../src/config.js'
 import { scan, scanDetailed, summarize } from '../src/scan.js'
-import { startRun, buildTask, stopRun, listRecords, readLogTail, isAlive, readRecord } from '../src/runner.js'
+import { startRun, buildTask, stopRun, listRecords, readLogTail, isAlive, readRecord, acquireBuildLock, adoptBuildLock, releaseBuildLock } from '../src/runner.js'
 import { isPortFree } from '../src/ports.js'
 import { findFreePort } from '../src/ports.js'
 import { listNodeVersions, resolveJava, resolveMaven } from '../src/toolchain.js'
@@ -363,6 +363,19 @@ async function cmdBuild(opts, ctx) {
     console.log(`${c.dim('▶')} ${c.bold(project.id)} ${taskName}${scope} ${c.dim(`(${project.absPath})`)}`)
   }
 
+  // 跨进程构建锁：面板里已在构建（或另一个终端在构建）时直接拒绝，而不是并发跑两份。
+  // 面板宿主拉起的构建（已持 pid:0 锁）走接管：把锁改写成自己的 pid。
+  let flock
+  if (process.env.DEVCTL_ADOPT_LOCK === '1') {
+    flock = adoptBuildLock(ctx.root, project.id, taskName)
+  } else {
+    flock = acquireBuildLock(ctx.root, project.id, taskName)
+    if (flock.busy) {
+      const where = flock.holder && flock.holder.pid ? `pid ${flock.holder.pid}` : '面板'
+      fail(`项目 "${project.id}" 的 ${taskName} 已在构建中（${where}），等它结束或用 devctl stop`)
+    }
+  }
+
   const result = await buildTask({
     root: ctx.root,
     project,
@@ -378,7 +391,7 @@ async function cmdBuild(opts, ctx) {
         : (text) => {
             if (text) process.stdout.write(text)
           },
-  })
+  }).finally(() => releaseBuildLock(ctx.root, project.id, taskName))
 
   if (opts.json) {
     console.log(JSON.stringify(result, null, 2))

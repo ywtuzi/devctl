@@ -15,6 +15,10 @@ window.__ModuleLoader__.load({
 
     const API = '/devctl-api'
     const LS_OPEN = 'devctl.panel.open'
+    const LS_WIDTH = 'devctl.panel.width'
+    // ANSI 转义序列（颜色/光标移动）：日志入口处 strip，渲染期零处理
+    const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g
+    const stripAnsi = (s) => (s ? s.replace(ANSI_RE, '') : s)
 
     async function call(path, init) {
       const res = await fetch(API + path, init)
@@ -190,6 +194,13 @@ window.__ModuleLoader__.load({
           const [open, setOpen] = useState(() => {
             try { return localStorage.getItem(LS_OPEN) === '1' } catch { return false }
           })
+          const [width, setWidth] = useState(() => {
+            try {
+              const n = Number(localStorage.getItem(LS_WIDTH))
+              return n >= 360 && n <= 960 ? n : 480
+            } catch { return 480 }
+          })
+          const dragRef = useRef(null)
           const [projects, setProjects] = useState([])
           const [excluded, setExcluded] = useState([])
           const [running, setRunning] = useState([])
@@ -211,6 +222,29 @@ window.__ModuleLoader__.load({
           useEffect(() => {
             try { localStorage.setItem(LS_OPEN, open ? '1' : '0') } catch { /* 忽略 */ }
           }, [open])
+
+          // 左缘拖拽调宽：面板 fixed right:20，宽度 = 视口宽 - 20 - 鼠标 x
+          const startDrag = (e) => {
+            e.preventDefault()
+            dragRef.current = { onMove: null }
+            const onMove = (ev) => {
+              const w = Math.min(960, Math.max(360, window.innerWidth - 20 - ev.clientX))
+              setWidth(w)
+            }
+            const onUp = () => {
+              dragRef.current = null
+              document.removeEventListener('mousemove', onMove)
+              document.removeEventListener('mouseup', onUp)
+              document.body.style.userSelect = ''
+              setWidth((w) => {
+                try { localStorage.setItem(LS_WIDTH, String(Math.round(w))) } catch { /* 忽略 */ }
+                return w
+              })
+            }
+            document.body.style.userSelect = 'none'
+            document.addEventListener('mousemove', onMove)
+            document.addEventListener('mouseup', onUp)
+          }
 
           const loadProjects = useCallback(async () => {
             try {
@@ -264,11 +298,14 @@ window.__ModuleLoader__.load({
                   // 滞留在 text 里会让渲染期每次都要对几百 KB 做正则+split+join
                   let add = d.data || ''
                   let progCount = c.progCount || 0
-                  if (add && c.hideProgress !== false) {
-                    const lines = add.split('\n')
-                    const kept = lines.filter((l) => !/webpack\.Progress/.test(l))
-                    progCount += lines.length - kept.length
-                    add = kept.join('\n')
+                  if (add) {
+                    add = stripAnsi(add)
+                    if (c.hideProgress !== false) {
+                      const lines = add.split('\n')
+                      const kept = lines.filter((l) => !/webpack\.Progress/.test(l))
+                      progCount += lines.length - kept.length
+                      add = kept.join('\n')
+                    }
                   }
                   const text = add ? c.text + add : c.text
                   return {
@@ -394,7 +431,7 @@ window.__ModuleLoader__.load({
             setCon({ runId, text: '', offset: null, ready: false, autoScroll: true })
             try {
               const d = await call(`/logs?runId=${encodeURIComponent(runId)}&lines=300`)
-              const all = (d.lines || [])
+              const all = (d.lines || []).map(stripAnsi)
               const kept = all.filter((l) => !/webpack\.Progress/.test(l))
               setCon((c) =>
                 c && c.runId === runId
@@ -413,12 +450,17 @@ window.__ModuleLoader__.load({
             }
           }
 
-          // 任务分类
+          // 任务分类。先建一次索引，避免在循环里反复 projects.find（O(n·m)）
+          const projectById = new Map(projects.map((p) => [p.id, p]))
+          const taskDefOf = (projectId, taskName) => {
+            const p = projectById.get(projectId)
+            return p ? (p.tasks || []).find((x) => x.name === taskName) : undefined
+          }
           const runInstances = []
           const buildInstances = []
           const runningByProject = {}
           for (const r of running) {
-            const def = (projects.find((p) => p.id === r.projectId)?.tasks || []).find((x) => x.name === r.task)
+            const def = taskDefOf(r.projectId, r.task)
             const kind = def ? def.kind : 'run'
             if (kind === 'build') buildInstances.push({ ...r, label: def?.label })
             else { runInstances.push({ ...r, label: def?.label }); runningByProject[r.projectId] = r }
@@ -436,7 +478,7 @@ window.__ModuleLoader__.load({
           for (const r of recent) {
             if (lastBuild[r.projectId]) continue
             if (NOT_A_PACKAGE.has(bareName(r.task))) continue
-            const def = (projects.find((p) => p.id === r.projectId)?.tasks || []).find((x) => x.name === r.task)
+            const def = taskDefOf(r.projectId, r.task)
             if (def && def.kind === 'build') lastBuild[r.projectId] = r
           }
 
@@ -474,6 +516,10 @@ window.__ModuleLoader__.load({
               borderRadius: 12, border: '1px solid var(--dsw-alias-border-l1)',
               background: 'var(--dsw-alias-bg-overlay)', boxShadow: '0 10px 32px rgba(0,0,0,0.24)',
               overflow: 'hidden', fontSize: 12, color: 'var(--dsw-alias-label-primary)',
+            },
+            resize: {
+              position: 'absolute', left: 0, top: 0, bottom: 0, width: 5, cursor: 'col-resize',
+              zIndex: 10,
             },
             header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', borderBottom: '1px solid var(--dsw-alias-border-l1)', gap: 8 },
             searchWrap: { padding: '6px 12px', borderBottom: '1px solid var(--dsw-alias-border-l1)' },
@@ -649,7 +695,13 @@ window.__ModuleLoader__.load({
             const rawText = (con && con.text) || ''
             const hideProg = !con || con.hideProgress !== false
             const progressCount = (con && con.progCount) || 0
-            const shownText = rawText
+            // <pre> 里塞几十万字符会拖垮 re-render，只渲染尾部 1500 行
+            const MAX_RENDER_LINES = 1500
+            const shownLines = rawText.split('\n')
+            const shownText =
+              shownLines.length > MAX_RENDER_LINES
+                ? `…（已省略 ${shownLines.length - MAX_RENDER_LINES} 行）\n${shownLines.slice(-MAX_RENDER_LINES).join('\n')}`
+                : rawText
             const kindLabel = rec && (runningByProject[rec.projectId] || buildingByProject[rec.projectId])
               ? (runningByProject[rec.projectId] ? t('running') : t('building'))
               : rec ? (rec.status === 'success' ? t('done') : rec.status) : ''
@@ -919,7 +971,8 @@ window.__ModuleLoader__.load({
 
           return h('div', { style: styles.layer },
             open
-              ? h('div', { style: styles.panel },
+              ? h('div', { style: { ...styles.panel, width } },
+                  h('div', { style: styles.resize, onMouseDown: startDrag, title: '拖拽调宽' }),
                   h('div', { style: styles.header },
                     h('div', null,
                       h('div', { style: { fontWeight: 600 } }, t('title')),

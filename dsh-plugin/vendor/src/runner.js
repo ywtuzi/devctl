@@ -551,6 +551,86 @@ export function stopRun(root, { runId, projectId }) {
   return results
 }
 
+/* ------------------------------ 跨进程构建锁 ------------------------------ */
+
+const lockName = (id, task) =>
+  `build-${String(`${id}|${task || ''}`).replace(/[^A-Za-z0-9_.-]/g, '-')}.lock`
+
+/**
+ * 构建去重的文件锁（.devctl/locks/）。
+ * 面板宿主里的进程内 Map 锁挡不住「两个 DSH 窗口」或「面板 + 终端」并发，
+ * 文件锁对所有前端生效：
+ *  - CLI 持锁：写真实 pid，靠 isAlive 判活，进程崩了锁自动失效
+ *  - 宿主持锁（detached 构建）：写 pid:0，由 sweepBuildLocks 按运行记录判定释放
+ */
+export function acquireBuildLock(root, id, task, { ttlMs = 30 * 60 * 1000, pid = process.pid } = {}) {
+  const dir = join(statePaths(root).base, 'locks')
+  mkdirSync(dir, { recursive: true })
+  const p = join(dir, lockName(id, task))
+  if (existsSync(p)) {
+    try {
+      const info = JSON.parse(readFileSync(p, 'utf8'))
+      const fresh = Date.now() - statSync(p).mtimeMs < ttlMs
+      // pid:0 表示 detached 构建，占用状态交给 sweep 按记录判定
+      const alive = info.pid ? isAlive(info.pid) : true
+      if (fresh && alive) return { busy: true, path: p, holder: info }
+    } catch {
+      /* 损坏的锁文件视为过期 */
+    }
+  }
+  writeFileSync(p, JSON.stringify({ pid, id, task: task || null, at: Date.now() }), 'utf8')
+  return { busy: false, path: p }
+}
+
+export function releaseBuildLock(root, id, task) {
+  try {
+    unlinkSync(join(statePaths(root).base, 'locks', lockName(id, task)))
+  } catch {
+    /* 不存在即已释放 */
+  }
+}
+
+/**
+ * 接管宿主（面板）持有的 pid:0 锁：detached CLI 启动后把自己的 pid 写进去。
+ * 之后锁的生死跟随 CLI 进程，CLI 崩了锁自动失效，sweep 也能按 pid 判活。
+ */
+export function adoptBuildLock(root, id, task) {
+  const dir = join(statePaths(root).base, 'locks')
+  mkdirSync(dir, { recursive: true })
+  const p = join(dir, lockName(id, task))
+  writeFileSync(p, JSON.stringify({ pid: process.pid, id, task: task || null, at: Date.now(), adopted: true }), 'utf8')
+  return { busy: false, path: p }
+}
+
+/**
+ * 清理可以释放的构建锁：持有进程已死的直接删；
+ * pid:0 的（宿主 detached 构建）在对应项目已无 running 记录时删。
+ * 留 5 秒缓冲覆盖「spawn 到记录写盘」的空窗。
+ */
+export function sweepBuildLocks(root, isRunning) {
+  const dir = join(statePaths(root).base, 'locks')
+  if (!existsSync(dir)) return
+  for (const f of readdirSync(dir)) {
+    if (!f.endsWith('.lock')) continue
+    const p = join(dir, f)
+    try {
+      const info = JSON.parse(readFileSync(p, 'utf8'))
+      if (info.pid && !isAlive(info.pid)) {
+        unlinkSync(p)
+        continue
+      }
+      if (!info.pid && Date.now() - statSync(p).mtimeMs > 5000 && !isRunning(info.id, info.task)) {
+        unlinkSync(p)
+      }
+    } catch {
+      /* 解析失败的锁文件：过期即删 */
+      try {
+        if (Date.now() - statSync(p).mtimeMs > 30 * 60 * 1000) unlinkSync(p)
+      } catch { /* ignore */ }
+    }
+  }
+}
+
 /* ------------------------------ 保留期清理 ------------------------------ */
 
 /**

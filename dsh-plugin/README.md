@@ -9,6 +9,7 @@ DeepSeek Harness（DSH）的悬浮面板插件，是 [devctl](../README.md) 的 
 - **执行前二次确认**：点运行 / 打包先预演并展示完整命令（命令、实际进程、cwd、运行时、端口），确认后才执行
 - **多任务按平台分组**：uni-app 的平台矩阵按 H5 / 微信 / 支付宝… 分组，不再平铺 32 个按钮
 - **搜索过滤**：项目多了直接在面板里筛
+- **面板可调宽**：左缘拖拽，360–960px，宽度记在 localStorage
 - **构建结果可见**：每个项目旁显示上次打包的 ✓/✗ 与耗时
 - **剔除 / 选入**：收掉不想看的项目，支持撤销，状态单独存放、不改手写配置
 
@@ -43,8 +44,9 @@ DeepSeek Harness（DSH）的悬浮面板插件，是 [devctl](../README.md) 的 
 
 - **用 handler 路由而不是 resource 路由**：`dsh-host-webserver` 的 `serveResource()`
   只放行 GET/HEAD，其他方法一律 405。handler 拿到原始 `IncomingMessage/ServerResponse` 才能处理 POST。
-- **打包去重是双层**：进程内锁挡住「连点两次」的竞态（spawn 到记录写盘有约 1 秒空窗，
-  只查 status 挡不住），status 检查挡住已存在的实例。
+- **打包去重是三层**：进程内锁挡住「连点两次」的竞态（spawn 到记录写盘有约 1 秒空窗，
+  只查 status 挡不住），跨进程文件锁（`.devctl/locks/`，CLI 写真实 pid、宿主 detached
+  构建写 `pid:0` 并由 CLI 接管）挡住「两个 DSH 窗口 / 面板 + 终端」并发，status 检查挡住已存在的实例。
 
 ## 安装
 

@@ -55,13 +55,25 @@ function resolveRootBase(ctx, config) {
 function resolveCli(root, config) {
   if (config && config.cliPath && existsSync(config.cliPath)) return config.cliPath
   const candidates = [
-    // 1) 插件自带的 CLI 副本（scripts/vendor.mjs 生成）——独立安装时唯一可用的一条
-    join(__dirname, 'vendor', 'bin', 'devctl.js'),
+    // 1) 同仓签出（开发状态）：本文件在 <repo>/dsh-plugin/ 下。
+    //    优先于 vendor 副本，避免仓库更新后面板还在跑旧逻辑。
+    //    必须同时看到 ../src 与 ../package.json(name=devctl)，
+    //    否则独立安装时 node_modules 里相邻包的 bin/devctl.js 会被误认。
+    existsSync(join(__dirname, '..', 'src', 'config.js')) &&
+      (() => {
+        try {
+          return JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')).name === 'devctl'
+        } catch {
+          return false
+        }
+      })()
+      ? join(__dirname, '..', 'bin', 'devctl.js')
+      : null,
     // 2) 工作区里已有 devctl
     join(root, 'devctl', 'bin', 'devctl.js'),
     join(root, 'bin', 'devctl.js'),
-    // 3) 同仓签出（开发状态）：本文件在 <repo>/dsh-plugin/ 下
-    join(__dirname, '..', 'bin', 'devctl.js'),
+    // 3) 插件自带的 CLI 副本（scripts/vendor.mjs 生成）——独立安装时唯一可用的一条
+    join(__dirname, 'vendor', 'bin', 'devctl.js'),
   ]
   for (const p of candidates) {
     if (existsSync(p)) return p
@@ -293,7 +305,9 @@ function readLog(root, runId, { lines = 200, offset = null } = {}) {
   const buf = Buffer.alloc(maxBytes)
   readSync(fd, buf, 0, maxBytes, start)
   closeSync(fd)
-  const all = buf.toString('utf8').split(/\r?\n/).filter((l) => l.length)
+  // 起点落在任意字节上可能切断多字节字符（CJK 乱码），回退到第一个换行再解码
+  const body = start > 0 ? buf.slice(buf.indexOf(0x0a) + 1) : buf
+  const all = body.toString('utf8').split(/\r?\n/).filter((l) => l.length)
   const lastNl = buf.lastIndexOf(0x0a)
   const nextOffset = lastNl >= 0 ? start + lastNl + 1 : size
   return { runId, path: p, offset: nextOffset, lines: all.slice(-lines), data: '' }
@@ -322,15 +336,27 @@ async function readBody(req) {
 
 export function apply(ctx, config) {
   const cfg = config || {}
-  let root = resolveRootBase(ctx, cfg)
-  const cli = resolveCli(root, cfg)
 
-  // DSH 的默认工作目录可能不是用户的工作区（例如 tray 目录）。
-  // 如果那里没有 devctl.config.json，就从 CLI 自身位置向上找真正的仓库根。
-  if (cli && !existsSync(join(root, 'devctl.config.json'))) {
-    const found = findRootFrom(dirname(cli))
-    if (found) root = found
+  // root 惰性解析：apply() 只执行一次，但 DSH 可能在会话中切换工作目录。
+  // 每次请求重新解析（几次 existsSync，<1ms），解析结果与上次相同时复用缓存。
+  let targetsCache = null
+  const resolveTargets = () => {
+    const base = resolveRootBase(ctx, cfg)
+    const key = base
+    if (targetsCache && targetsCache.key === key) return targetsCache.value
+    let root = base
+    const cli = resolveCli(root, cfg)
+    // DSH 的默认工作目录可能不是用户的工作区（例如 tray 目录）。
+    // 如果那里没有 devctl.config.json，就从 CLI 自身位置向上找真正的仓库根。
+    if (cli && !existsSync(join(root, 'devctl.config.json'))) {
+      const found = findRootFrom(dirname(cli))
+      if (found) root = found
+    }
+    const value = { root, cli }
+    targetsCache = { key, value }
+    return value
   }
+  resolveTargets()
 
   // 打包去重：进程内锁挡住「spawn 到记录写盘」那约 1 秒的空窗
   const buildLocks = new Map()
@@ -346,7 +372,7 @@ export function apply(ctx, config) {
 
   const handler = async (req, res) => {
     let lastGcAt = 0
-    const maybeGc = () => {
+    const maybeGc = (root) => {
       if (Date.now() - lastGcAt < GC_INTERVAL_MS) return
       lastGcAt = Date.now()
       try {
@@ -366,6 +392,7 @@ export function apply(ctx, config) {
     const action = pathname.slice(API_PREFIX.length).replace(/^\/+/, '')
     const method = String(req.method || 'GET').toUpperCase()
     const url = new URL(req.url || '/', 'http://localhost')
+    const { root, cli } = resolveTargets()
 
     if (!cli) {
       return send(res, 500, {
@@ -388,16 +415,29 @@ export function apply(ctx, config) {
             projects: projects.map(toWire),
             excluded,
           })
-        } catch {
-          // 宿主内失败时退回子进程，保证仍能用
+        } catch (e) {
+          // 宿主内失败时退回子进程，保证仍能用；留一条日志便于排查版本不一致
+          console.warn('[devctl-panel] 宿主内扫描失败，回退 CLI 子进程:', (e && e.message) || e)
           const data = await runCli(cli, root, ['list', '--json'])
           return send(res, 200, { root, ...data })
         }
       }
 
       if (action === 'status' && method === 'GET') {
-        maybeGc()
-        return send(res, 200, { root, ...readStatus(root) })
+        maybeGc(root)
+        const status = readStatus(root)
+        // 释放可以放手的构建锁：宿主 detached 构建结束后，锁由这里按记录状态回收
+        try {
+          const { runnerMod } = modsCache ? modsCache.value : {}
+          if (runnerMod) {
+            runnerMod.sweepBuildLocks(root, (id, task) =>
+              status.running.some((r) => r.projectId === id && (!task || r.task === task || task === null))
+            )
+          }
+        } catch {
+          /* 锁回收失败不影响业务 */
+        }
+        return send(res, 200, { root, ...status })
       }
 
       if (action === 'logs' && method === 'GET') {
@@ -437,7 +477,8 @@ export function apply(ctx, config) {
           )
           return send(res, 200, plan)
         } catch (e) {
-          // 退回子进程：直接跑 bin/plan.js
+          // 退回子进程：直接跑 bin/plan.js；同样留日志
+          console.warn('[devctl-panel] 宿主内预演失败，回退 plan.js 子进程:', (e && e.message) || e)
           const args = [body.id]
           if (body.task) args.push(body.task)
           if (body.module) args.push('--module', body.module)
@@ -467,6 +508,22 @@ export function apply(ctx, config) {
         if (lock.busy) {
           return send(res, 200, { started: false, busy: true, id: body.id, reason: 'lock' })
         }
+
+        // 跨进程文件锁：挡住「另一个 DSH 窗口 / 终端里已在构建」的情况
+        let fileLock = null
+        try {
+          const { runnerMod } = await loadMods(cli)
+          fileLock = runnerMod.acquireBuildLock(root, body.id, body.task, { pid: 0 })
+          if (fileLock.busy) {
+            buildLocks.delete(lock.key)
+            return send(res, 200, {
+              started: false, busy: true, id: body.id, reason: 'cross-process lock',
+            })
+          }
+        } catch {
+          /* 加锁失败不阻塞构建（老版本 CLI 无此能力时回退旧行为） */
+        }
+
         try {
           const { running } = readStatus(root)
           const dup = running.find(
@@ -474,6 +531,12 @@ export function apply(ctx, config) {
           )
           if (dup) {
             buildLocks.delete(lock.key)
+            if (fileLock) {
+              try {
+                const { runnerMod } = await loadMods(cli)
+                runnerMod.releaseBuildLock(root, body.id, body.task)
+              } catch { /* ignore */ }
+            }
             return send(res, 200, { started: false, busy: true, id: body.id, runId: dup.runId })
           }
         } catch {
@@ -488,6 +551,9 @@ export function apply(ctx, config) {
           detached: true,
           stdio: 'ignore',
           windowsHide: true,
+          // CLI 看到这个标记会把宿主的 pid:0 锁接管成自己的 pid，
+          // 避免 CLI 一启动就撞上宿主刚拿的锁
+          env: { ...process.env, DEVCTL_ADOPT_LOCK: '1' },
         })
         child.unref()
         return send(res, 200, { started: true, id: body.id })
