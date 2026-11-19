@@ -91,7 +91,14 @@ try {
   assert.equal(be.kind, 'maven')
   assert.equal(be.runnable, true)
   assert.ok(be.tasks.run, '可运行模块应有 run 任务')
-  assert.ok(be.tasks.run.args.includes('svc'), 'run 应指向子模块 svc')
+  // run 用 -f 指向子模块 pom（不用 -pl -am：goal 前缀按根 pom 解析、-am 会让
+  // goal 在 reactor 每个模块上各跑一次，见 src/detectors/maven.js 注释）
+  const runArgs = be.tasks.run.args
+  assert.equal(runArgs[0], '-f', `run 应以 -f 开头，实际: ${runArgs.join(' ')}`)
+  assert.ok(runArgs.includes('svc/pom.xml'), `run 应指向子模块 svc 的 pom，实际: ${runArgs.join(' ')}`)
+  assert.ok(/spring-boot/.test(runArgs[runArgs.length - 1]), `run 应调用 spring-boot 插件，实际: ${runArgs[runArgs.length - 1]}`)
+  assert.equal(be.tasks.run.detail, 'svc', 'run/debug 的 detail 仍标明可运行模块')
+  assert.ok(be.tasks.run.note && be.tasks.run.note.includes('install'), '多模块 run 应提示先 install')
   assert.ok(be.tasks.debug, '可运行模块应有 debug 任务')
   assert.equal(be.tasks.debug.debug, true)
   assert.ok(be.tasks.build && be.tasks.install)
