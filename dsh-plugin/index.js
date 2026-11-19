@@ -10,6 +10,8 @@ import {
   existsSync,
   readdirSync,
   readFileSync,
+  writeFileSync,
+  renameSync,
   statSync,
   openSync,
   readSync,
@@ -24,6 +26,7 @@ export const inject = ['webServer']
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const API_PREFIX = '/devctl-api'
 const PROJECTS_TTL_MS = 2000
+const GC_INTERVAL_MS = 10 * 60 * 1000
 
 /* ---------------------------- 路径解析 ---------------------------- */
 
@@ -94,11 +97,19 @@ function runCli(cli, root, args, timeoutMs = 60000) {
 let modsCache = null
 
 /**
- * 源码版本号：取 src/ 下所有文件的最大 mtime。
- * Node 的 ESM 缓存按 URL 命中，插件重载不会清掉它——加了版本号查询串后，
- * vendor 一更新 URL 就变，宿主才会真正用上新代码。
+ * 源码版本号：优先取 src 同级 package.json 的 version，
+ * 再叠加所有文件的 mtime。只用 mtime 的问题是 npm install / robocopy
+ * 之类会把 mtime 重置成同一个值，缓存失效机制随之失灵；
+ * 内容变了 version 或 mtime 至少有一个会变，双保险。
  */
-function srcVersion(srcDir) {
+async function srcVersion(srcDir) {
+  let ver = ''
+  try {
+    const pkg = JSON.parse(readFileSync(join(dirname(srcDir), 'package.json'), 'utf8'))
+    ver = String(pkg.version || '')
+  } catch {
+    /* 无 package.json 时只用 mtime */
+  }
   let max = 0
   const walk = (dir) => {
     let entries
@@ -120,20 +131,21 @@ function srcVersion(srcDir) {
     }
   }
   walk(srcDir)
-  return Math.round(max)
+  return `${ver}@${Math.round(max)}`
 }
 
 async function loadMods(cli) {
   const srcDir = join(dirname(dirname(cli)), 'src')
-  const ver = srcVersion(srcDir)
+  const ver = await srcVersion(srcDir)
   if (modsCache && modsCache.dir === srcDir && modsCache.ver === ver) return modsCache.value
   const url = (f) => `${pathToFileURL(join(srcDir, f)).href}?v=${ver}`
-  const [configMod, scanMod, planMod] = await Promise.all([
+  const [configMod, scanMod, planMod, runnerMod] = await Promise.all([
     import(url('config.js')),
     import(url('scan.js')),
     import(url('plan.js')),
+    import(url('runner.js')),
   ])
-  modsCache = { dir: srcDir, ver, value: { configMod, scanMod, planMod } }
+  modsCache = { dir: srcDir, ver, value: { configMod, scanMod, planMod, runnerMod } }
   return modsCache.value
 }
 
@@ -218,7 +230,22 @@ function readStatus(root) {
     }
   }
   for (const r of recs) {
-    if (r.status === 'running' && isAlive(r.pid)) running.push(r)
+    if (r.status !== 'running') continue
+    if (isAlive(r.pid)) {
+      running.push(r)
+    } else {
+      // daemon 被强杀 / 机器重启后记录会永远停在 running。
+      // 回写为 lost，recent 列表里的状态才和事实一致。
+      r.status = 'lost'
+      r.endedAt = r.endedAt || new Date().toISOString()
+      try {
+        const tmp = join(dir, `${r.runId}.lost.tmp`)
+        writeFileSync(tmp, JSON.stringify(r, null, 2), 'utf8')
+        renameSync(tmp, join(dir, f))
+      } catch {
+        /* 回写失败不影响本次返回 */
+      }
+    }
   }
   recent.push(
     ...recs
@@ -318,6 +345,18 @@ export function apply(ctx, config) {
   }
 
   const handler = async (req, res) => {
+    let lastGcAt = 0
+    const maybeGc = () => {
+      if (Date.now() - lastGcAt < GC_INTERVAL_MS) return
+      lastGcAt = Date.now()
+      try {
+        const gcState = modsCache ? modsCache.value.runnerMod.gcState : null
+        if (gcState) gcState(root)
+      } catch {
+        /* 清理失败不影响业务 */
+      }
+    }
+
     let pathname = API_PREFIX
     try {
       pathname = new URL(req.url || '/', 'http://localhost').pathname
@@ -357,12 +396,16 @@ export function apply(ctx, config) {
       }
 
       if (action === 'status' && method === 'GET') {
+        maybeGc()
         return send(res, 200, { root, ...readStatus(root) })
       }
 
       if (action === 'logs' && method === 'GET') {
         const runId = url.searchParams.get('runId')
-        if (!runId) return send(res, 400, { error: '缺少 runId' })
+        // runId 会拼进文件路径，必须先校验，否则 ..%2F 可穿越读任意 .log 文件
+        if (!runId || !/^[A-Za-z0-9_.-]+$/.test(runId)) {
+          return send(res, 400, { error: '非法 runId' })
+        }
         const lines = Number(url.searchParams.get('lines') || 200)
         const rawOffset = url.searchParams.get('offset')
         const offset = rawOffset === null ? null : Number(rawOffset)

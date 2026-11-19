@@ -90,6 +90,7 @@ window.__ModuleLoader__.load({
           openUrl: '打开链接', clear: '清屏', autoScroll: '自动滚动', pauseScroll: '已暂停跟随',
           exited: '已退出', uptime: '已运行', pid: 'PID', encoding: '编码',
           buildOk: '上次打包成功', buildFail: '上次打包失败', never: '从未运行',
+          done: '成功',
           emptyLog: '(还没有输出)',
           'platform.h5': 'H5',
           'platform.h5:ssr': 'H5 (SSR)',
@@ -144,6 +145,7 @@ window.__ModuleLoader__.load({
           openUrl: 'Open URL', clear: 'Clear', autoScroll: 'Follow', pauseScroll: 'Paused',
           exited: 'Exited', uptime: 'Uptime', pid: 'PID', encoding: 'Encoding',
           buildOk: 'Last build succeeded', buildFail: 'Last build failed', never: 'Never run',
+          done: 'Done',
           emptyLog: '(no output yet)',
           'platform.h5': 'H5',
           'platform.h5:ssr': 'H5 (SSR)',
@@ -258,8 +260,23 @@ window.__ModuleLoader__.load({
                 if (stopped) return
                 setCon((c) => {
                   if (!c || c.runId !== runId) return c
-                  const text = d.data ? c.text + d.data : c.text
-                  return { ...c, text: text.length > 300000 ? text.slice(-300000) : text, offset: d.offset }
+                  // webpack.Progress 这类心跳行在入口处就丢弃，只累计条数：
+                  // 滞留在 text 里会让渲染期每次都要对几百 KB 做正则+split+join
+                  let add = d.data || ''
+                  let progCount = c.progCount || 0
+                  if (add && c.hideProgress !== false) {
+                    const lines = add.split('\n')
+                    const kept = lines.filter((l) => !/webpack\.Progress/.test(l))
+                    progCount += lines.length - kept.length
+                    add = kept.join('\n')
+                  }
+                  const text = add ? c.text + add : c.text
+                  return {
+                    ...c,
+                    text: text.length > 300000 ? text.slice(-300000) : text,
+                    offset: d.offset,
+                    progCount,
+                  }
                 })
               } catch {
                 /* 单次失败继续下一次 */
@@ -377,9 +394,18 @@ window.__ModuleLoader__.load({
             setCon({ runId, text: '', offset: null, ready: false, autoScroll: true })
             try {
               const d = await call(`/logs?runId=${encodeURIComponent(runId)}&lines=300`)
+              const all = (d.lines || [])
+              const kept = all.filter((l) => !/webpack\.Progress/.test(l))
               setCon((c) =>
                 c && c.runId === runId
-                  ? { ...c, text: (d.lines || []).join('\n'), offset: d.offset, ready: true, path: d.path }
+                  ? {
+                      ...c,
+                      text: kept.join('\n'),
+                      offset: d.offset,
+                      ready: true,
+                      path: d.path,
+                      progCount: all.length - kept.length,
+                    }
                   : c
               )
             } catch (e) {
@@ -619,16 +645,14 @@ window.__ModuleLoader__.load({
           const renderConsole = () => {
             const rec = conRec
             const isRun = rec && rec.status === 'running'
-            // webpack 的进度输出每秒十几 KB，默认折叠掉，只看真正的日志
+            // webpack.Progress 已在拉取时按行丢弃（见日志增量 effect），这里只读计数
             const rawText = (con && con.text) || ''
             const hideProg = !con || con.hideProgress !== false
-            const progressCount = (rawText.match(/webpack\.Progress/g) || []).length
-            const shownText = hideProg && progressCount
-              ? rawText.split('\n').filter((l) => !/webpack\.Progress/.test(l)).join('\n')
-              : rawText
+            const progressCount = (con && con.progCount) || 0
+            const shownText = rawText
             const kindLabel = rec && (runningByProject[rec.projectId] || buildingByProject[rec.projectId])
               ? (runningByProject[rec.projectId] ? t('running') : t('building'))
-              : rec ? (rec.status === 'success' ? '成功' : rec.status) : ''
+              : rec ? (rec.status === 'success' ? t('done') : rec.status) : ''
             return h('div', { style: { ...styles.overlay, padding: '10px 12px' } },
               h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 } },
                 h('div', null,

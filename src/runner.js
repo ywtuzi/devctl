@@ -1,5 +1,5 @@
 // 执行器：解析命令、spawn、GBK 解码、日志与运行态记录
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, openSync, closeSync, readSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, renameSync, openSync, closeSync, readSync, statSync, unlinkSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
@@ -20,16 +20,24 @@ export function ensureState(root) {
   return paths
 }
 
+let runSeq = 0
 export function runIdFor(projectId, task) {
-  const stamp = new Date()
-    .toISOString()
-    .replace(/[-:T]/g, '')
-    .slice(0, 14)
+  const d = new Date()
+  const stamp = [
+    d.getFullYear(),
+    String(d.getMonth() + 1).padStart(2, '0'),
+    String(d.getDate()).padStart(2, '0'),
+    String(d.getHours()).padStart(2, '0'),
+    String(d.getMinutes()).padStart(2, '0'),
+    String(d.getSeconds()).padStart(2, '0'),
+  ].join('')
   // 注意：Windows 文件名不允许 : < > " / \ | ? * ，
   // 像 uni-app 的 `dev:mp-weixin` 直接拼进去会变成 NTFS 备用数据流，
   // 目录里看到的文件名会被截断，导致 status/stop 找不到记录。
   const safe = `${projectId}_${task}`.replace(/[^a-zA-Z0-9_.-]/g, '-')
-  return `${safe}_${stamp}`
+  // 毫秒 + 进程内序号：同一毫秒内重复启动同一任务也不会互相覆盖记录
+  const uniq = `${String(d.getMilliseconds()).padStart(3, '0')}${String(runSeq++)}`
+  return `${safe}_${stamp}${uniq}`
 }
 
 export function recordPath(root, runId) {
@@ -57,7 +65,19 @@ export function writeRecord(root, runId, patch) {
     }
   }
   const next = { ...rec, ...patch }
-  writeFileSync(p, JSON.stringify(next, null, 2), 'utf8')
+  // 原子写：轮询方（面板 status）可能随时读这个文件，
+  // 直接 writeFileSync 覆盖会读到半截 JSON。tmp + rename 保证要么旧要么新。
+  const tmp = `${p}.${process.pid}.tmp`
+  writeFileSync(tmp, JSON.stringify(next, null, 2), 'utf8')
+  try {
+    renameSync(tmp, p)
+  } catch {
+    // 极端情况下 rename 失败（如杀软短暂锁文件）：保留 tmp，直接写回旧路径兜底
+    try {
+      unlinkSync(tmp)
+    } catch { /* ignore */ }
+    writeFileSync(p, JSON.stringify(next, null, 2), 'utf8')
+  }
   return next
 }
 
@@ -273,13 +293,16 @@ export async function startRun({ root, project, taskName, config, portOverride, 
   const paths = ensureState(root)
   const runId = runIdFor(project.id, taskName)
 
-  // 端口：仅 vue-cli / vite 这类支持 --port 的项目注入
+  // 端口：vue-cli（PORT 环境变量）与 vite（--port 参数）都支持注入；
+  // 其它类型（uni-app 等）行为不确定，保持不碰。
   let port = portOverride
-  if (!port && project.basePort && project.type === 'vue-cli') {
+  let portWarning = null
+  const portInjectable = project.type === 'vue-cli' || project.type === 'vite'
+  if (!port && project.basePort && portInjectable) {
     const { findFreePort } = await import('./ports.js')
     port = await findFreePort(project.basePort)
     if (port !== project.basePort) {
-      // 冲突后偏移，由调用方提示
+      portWarning = `端口 ${project.basePort} 被占用，改用 ${port}`
     }
   }
 
@@ -302,6 +325,9 @@ export async function startRun({ root, project, taskName, config, portOverride, 
     logPath,
   }
   writeRecord(root, runId, phase)
+
+  // 端口冲突偏移要出现在返回值里，CLI / 面板才能提示用户
+  if (portWarning) writeRecord(root, runId, { warnings: [portWarning] })
 
   // 写 spec 并拉起 daemon
   const specPath = join(paths.runs, `${runId}.spec.json`)
@@ -341,7 +367,7 @@ export async function startRun({ root, project, taskName, config, portOverride, 
     if (rec && rec.status !== 'starting') break
   }
 
-  return { ...rec, runId, warnings: spec.warnings }
+  return { ...rec, runId, warnings: [...spec.warnings, ...(portWarning ? [portWarning] : [])] }
 }
 
 /* ------------------------------ 构建（阻塞） ------------------------------ */
@@ -523,6 +549,59 @@ export function stopRun(root, { runId, projectId }) {
     }
   }
   return results
+}
+
+/* ------------------------------ 保留期清理 ------------------------------ */
+
+/**
+ * 清理过期的运行记录与日志。runs/logs 不清理会无限累积，
+ * 而 /status 每次轮询都要全量读取，几个月后面板会越来越慢。
+ * 规则：
+ *  - 记录：状态非 running 且 mtime 超过 maxAgeDays 的 .json / .spec.json / .tmp 一并删除
+ *  - 日志：mtime 超过 maxAgeDays 的 .log 删除
+ *  - running 状态的一律保留（可能真的在跑，由 readStatus 的僵尸回写负责纠正）
+ * 由宿主 /status 节流调用，单次全量扫描本身 <10ms，不需要异步化。
+ */
+export function gcState(root, { maxAgeDays = 14 } = {}) {
+  const paths = statePaths(root)
+  const cutoff = Date.now() - maxAgeDays * 24 * 3600 * 1000
+  const removed = { records: 0, logs: 0 }
+
+  const sweep = (dir, exts, checkRecord) => {
+    if (!existsSync(dir)) return
+    for (const f of readdirSync(dir)) {
+      if (!exts.some((e) => f.endsWith(e))) continue
+      const p = join(dir, f)
+      let mtimeMs
+      try {
+        mtimeMs = statSync(p).mtimeMs
+      } catch {
+        continue
+      }
+      if (mtimeMs >= cutoff) continue
+      if (checkRecord) {
+        // 记录文件：running 状态保留（含删不掉的半截 JSON 之外的误判保护——
+        // 解析失败且过期的按垃圾处理）
+        try {
+          const rec = JSON.parse(readFileSync(p, 'utf8'))
+          if (rec.status === 'running' || rec.status === 'starting') continue
+        } catch {
+          /* 解析失败：过期即删 */
+        }
+      }
+      try {
+        unlinkSync(p)
+        if (checkRecord) removed.records++
+        else removed.logs++
+      } catch {
+        /* 正被占用等，下次再试 */
+      }
+    }
+  }
+
+  sweep(paths.runs, ['.json', '.spec.json', '.tmp'], true)
+  sweep(paths.logs, ['.log'], false)
+  return removed
 }
 
 export function readLogTail(root, runId, lines = 120) {

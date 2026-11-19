@@ -1,5 +1,5 @@
 // 长驻任务守护进程：被 devctl run 以 detached 方式拉起，负责给子进程收尸和落日志
-import { readFileSync, existsSync, openSync, writeSync, closeSync } from 'node:fs'
+import { readFileSync, existsSync, openSync, writeSync, closeSync, unlinkSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { makeDecoder, recordPath, readRecord, writeRecord } from './runner.js'
 
@@ -10,6 +10,12 @@ if (!specPath || !existsSync(specPath)) {
 }
 
 const spec = JSON.parse(readFileSync(specPath, 'utf8'))
+// spec 里含完整子进程环境变量（可能有 token/密码），读完立即删除，不在磁盘留副本
+try {
+  unlinkSync(specPath)
+} catch {
+  /* Windows 上偶尔因句柄延迟失败，交给保留期清理兜底 */
+}
 const decode = makeDecoder(spec.encoding)
 
 let fd
