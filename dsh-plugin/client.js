@@ -69,6 +69,8 @@ window.__ModuleLoader__.load({
 /* 项目行 hover 反馈（内联样式写不了 :hover） */
 .devctl-row { outline: none; }
 .devctl-row:hover { background: var(--dsw-alias-bg-layer-1); }
+/* 关闭按钮：无边框 ×，hover 加底变亮（常见模态关闭样式） */
+.devctl-close-btn:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
 /* 变更文件行：整行可点（切换暂存），hover 反馈；冲突行浅红底 */
 .devctl-file-row { outline: none; border-radius: 4px; cursor: pointer; }
 .devctl-file-row:hover { background: var(--dsw-alias-bg-layer-2); }
@@ -546,18 +548,12 @@ window.__ModuleLoader__.load({
               }
             })
 
-          // 直接运行（免确认路径与确认后执行走同一段逻辑，保证行为一致）
+          // 直接运行（会话级免确认路径与确认后执行走同一段逻辑）
           const runDirect = async (project, task) =>
             act(project.id, async () => {
               const r = await post('/run', { id: project.id, task: task.name })
               return `${project.id} · ${task.name} → ${r.url || 'started'}`
             })
-
-          // 行内快捷运行：默认任务 = dev/run 优先，否则第一个运行类任务
-          const defaultRunTask = (p) => {
-            const rs = (p.tasks || []).filter((x) => x.kind === 'run' && x.section !== 'release')
-            return rs.find((x) => x.name === 'dev' || x.name === 'run' || x.name.endsWith(':dev')) || rs[0] || null
-          }
 
           const requestAction = async (project, task, mode) => {
             // 会话级免确认（仅 run 且非发布类）：用户勾选过"本次会话直接运行"的任务
@@ -1628,11 +1624,25 @@ window.__ModuleLoader__.load({
                 h('span', { style: { flex: 1, minWidth: 0, overflowX: 'auto', color } }, l))
             }
             return h('div', { style: styles.drawer },
-              crumbs([
-                { label: t('nav.projects'), onClick: () => { setGitDiff(null); setGitPanel(null) } },
-                { label: `${g.id} · ${t('git')}`, onClick: () => setGitDiff(null) },
-                { label: g.path.split('/').pop(), title: g.path },
-              ]),
+              h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 } },
+                h('div', { style: { flex: 1, minWidth: 0 } },
+                  crumbs([
+                    { label: t('nav.projects'), onClick: () => { setGitDiff(null); setGitPanel(null) } },
+                    { label: `${g.id} · ${t('git')}`, onClick: () => setGitDiff(null) },
+                    { label: g.path.split('/').pop(), title: g.path },
+                  ])),
+                // 关闭：常见设计——无边框幽灵按钮、次级色 ×，hover 变主文字色
+                h('button', {
+                  style: {
+                    border: 'none', background: 'transparent', cursor: 'pointer', flexShrink: 0,
+                    width: 26, height: 26, borderRadius: 6, display: 'inline-flex',
+                    alignItems: 'center', justifyContent: 'center',
+                    fontSize: 15, lineHeight: 1, color: 'var(--dsw-alias-label-secondary)',
+                  },
+                  className: 'devctl-close-btn',
+                  title: t('back'),
+                  onClick: () => setGitDiff(null),
+                }, '×')),
               h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 } },
                 h('span', { style: { ...styles.meta, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
                   g.path + (g.untracked ? ` · ${t('git.untrackedNew')}` : '')),
@@ -1978,13 +1988,19 @@ window.__ModuleLoader__.load({
               else meta = `${t('idle')} · ${p.type}${p.node ? ` · n${p.node}` : ''}${taskCount ? ` · ${taskCount} 个任务` : ''}`
 
               rows.push(
-                h('div', { key: p.id, style: styles.row, className: 'devctl-row' },
+                // 整行可点：点项目行 = 展开/收起任务区（展开状态即操作入口，
+                // ▶/▾/× 都不再放行上——小图标命中难且易误触）
+                h('div', {
+                  key: p.id, style: { ...styles.row, cursor: taskCount ? 'pointer' : 'default' }, className: 'devctl-row',
+                  onClick: () => { if (taskCount) setExpanded(isOpen ? null : p.id) },
+                },
                   h('div', {
                     style: styles.name,
                     title: [p.id, p.packageName && p.packageName !== p.id ? `package: ${p.packageName}` : null, p.basePort ? `端口 ${p.basePort}` : null].filter(Boolean).join('\n'),
                   },
                     h('span', { style: live ? styles.dot : building ? styles.dotBuild : styles.dotIdle }),
                     p.id,
+                    taskCount && !isOpen ? h('span', { style: { ...styles.meta, marginLeft: 6, fontSize: 10 }, title: t('more') }, '▾') : null,
                     last && !live && !building
                       ? h('span', {
                           style: last.status === 'success' ? styles.badgeOk : styles.badgeFail,
@@ -1996,7 +2012,7 @@ window.__ModuleLoader__.load({
                     ? h('button', {
                         style: styles.btn,
                         title: t('git'),
-                        onClick: () => openGitPanel(p.id),
+                        onClick: (e) => { e.stopPropagation(); openGitPanel(p.id) },
                       }, (() => {
                         const g = gitBranches[p.id]
                         const kn = gitKnown[p.id]
@@ -2005,29 +2021,7 @@ window.__ModuleLoader__.load({
                           kn && kn.dirty ? '±' : kn && kn.ahead > 0 ? '↑' : kn && kn.behind > 0 ? '↓' : ''
                         return `⎇ ${label}${mark}`
                       })())
-                    : null,
-                  // 行内快捷运行：默认任务（dev/run 优先）一键起，未勾免确认时仍弹确认卡
-                  (() => {
-                    if (live || building) return null
-                    const dtk = defaultRunTask(p)
-                    if (!dtk) return null
-                    return h('button', {
-                      style: { ...styles.btn, ...styles.btnRun },
-                      disabled: isBusy,
-                      title: `${t('run')} · ${dtk.name}`,
-                      onClick: () => requestAction(p, dtk, 'run'),
-                    }, '▶')
-                  })(),
-                  // 运行中实例的 停止/控制台 按钮只在顶部「运行中/打包中」区展示，
-                  // 普通列表行不再重复（meta 文案已标明运行状态）
-                  taskCount
-                    ? h('button', {
-                        style: styles.btn, disabled: isBusy,
-                        title: isOpen ? t('fewer') : t('more'),
-                        onClick: () => setExpanded(isOpen ? null : p.id),
-                      }, isOpen ? '▴' : '▾')
-                    : null,
-                  h('button', { style: { ...styles.btn, ...styles.btnGhost }, disabled: isBusy, title: t('drop'), onClick: () => toggleMember(p.id, 'exclude') }, '×'))
+                    : null)
               )
 
               if (isOpen) {
@@ -2038,7 +2032,18 @@ window.__ModuleLoader__.load({
                 const mntTasks = buildTasks.filter((x) => x.section !== 'release')
                 const buildLabel = relTasks.length ? t('section.build') : t('build')
                 rows.push(
-                  h('div', { key: `${p.id}-tasks`, style: styles.taskBox },
+                  h('div', { key: `${p.id}-tasks`, style: { ...styles.taskBox, position: 'relative' } },
+                    // 剔除入口：展开区右上角，红描边按钮（纯文字，悬浮提示）
+                    h('button', {
+                      style: {
+                        ...styles.btn, ...styles.btnStop,
+                        position: 'absolute', top: 6, right: 8,
+                        padding: '3px 12px', background: 'transparent',
+                      },
+                      disabled: isBusy,
+                      title: '把该项目从面板列表剔除（已剔除区可随时选回）',
+                      onClick: () => toggleMember(p.id, 'exclude'),
+                    }, t('drop')),
                     grp.plain
                       ? [
                           runTasks.length ? h('div', { key: 'r', style: styles.taskGroupLabel }, `${t('run')} (${runTasks.length})`) : null,
