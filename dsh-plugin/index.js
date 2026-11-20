@@ -622,9 +622,53 @@ export function apply(ctx, config) {
               gitMod.gitStatusDetail(project.absPath),
               gitMod.gitBranches(project.absPath),
             ])
-            gitDetailCache = { id, at: Date.now(), value: { status, branches } }
+            gitDetailCache = { id, at: Date.now(), value: { absPath: project.absPath, status, branches } }
           }
           return send(res, 200, { id, ...gitDetailCache.value })
+        } catch (e) {
+          return send(res, 500, { error: String((e && e.message) || e) })
+        }
+      }
+
+      if (action === 'git-diff' && method === 'GET') {
+        // 单文件 unified diff：点击变更/待提交文件才发生（~1s spawn，不进轮询）
+        const id = url.searchParams.get('id')
+        const path = url.searchParams.get('path')
+        const staged = url.searchParams.get('staged') === '1'
+        const untracked = url.searchParams.get('untracked') === '1'
+        if (!id || !/^[A-Za-z0-9_./-]+$/.test(id)) return send(res, 400, { error: '非法 id' })
+        if (!path || path.length > 1024 || path.includes('\0') || /^[A-Za-z]:[\\/]/.test(path) || path.startsWith('/')) {
+          return send(res, 400, { error: '非法 path' })
+        }
+        const { projects } = await getScan(root, cli)
+        const project = projects.find((p) => p.id === id)
+        if (!project) return send(res, 404, { error: `项目不存在: ${id}` })
+        try {
+          const { gitMod } = await loadMods(cli)
+          if (untracked) {
+            // 未跟踪文件没有旧版本：直接读文件合成"全新增"展示（上限 100KB / 1500 行）
+            const { readFileSync, statSync } = await import('node:fs')
+            const { join } = await import('node:path')
+            const abs = join(project.absPath, path)
+            let text = ''
+            try {
+              if (statSync(abs).size > 100 * 1024) {
+                return send(res, 200, { path, untracked: true, truncated: true, unified: '(文件超过 100KB，不做全文展示；请用编辑器查看)' })
+              }
+              text = readFileSync(abs, 'utf8')
+            } catch (e) {
+              return send(res, 200, { path, untracked: true, unified: `(读取失败: ${e.message})` })
+            }
+            const lines = text.split('\n').slice(0, 1500)
+            const truncated = text.split('\n').length > 1500
+            return send(res, 200, {
+              path, untracked: true, truncated,
+              unified: lines.map((l) => `+${l}`).join('\n'),
+            })
+          }
+          const r = await gitMod.gitDiffFile(project.absPath, path, { staged })
+          if (!r.ok) return send(res, 200, { path, error: r.err || 'git diff 失败' })
+          return send(res, 200, { path, staged, unified: r.out, truncated: r.out.length > 400 * 1024 })
         } catch (e) {
           return send(res, 500, { error: String((e && e.message) || e) })
         }

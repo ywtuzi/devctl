@@ -381,6 +381,18 @@ export async function gitUnstage(absPath, paths) {
 }
 
 /**
+ * 单文件 unified diff（staged=true 对比暂存区 vs HEAD，否则工作区 vs 暂存区）。
+ * --find-renames 让重命名文件显示 rename + 内容差异。
+ * 未跟踪文件 git diff 无输出——由调用方决定如何展示（host 直接读文件合成全新增）。
+ */
+export async function gitDiffFile(absPath, path, { staged = false } = {}) {
+  return git(absPath, [
+    'diff', '--no-color', '--unified=3', '--find-renames',
+    ...(staged ? ['--cached'] : []), '--', path,
+  ], 30000)
+}
+
+/**
  * 提交暂存区（git commit -m）。面板流程：用户先勾选文件进待提交区，再提交；
  * all=true 时先 git add -A（CLI 便捷参数，面板不用）。
  */
