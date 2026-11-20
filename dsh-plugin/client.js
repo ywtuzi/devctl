@@ -66,6 +66,9 @@ window.__ModuleLoader__.load({
 /* git 分支行（GitLens 式列表）：hover 才出现操作提示 */
 .devctl-git-item { outline: none; text-align: left; width: 100%; background: transparent; }
 .devctl-git-item:hover { background: var(--dsw-alias-bg-layer-2) !important; }
+/* 项目行 hover 反馈（内联样式写不了 :hover） */
+.devctl-row { outline: none; }
+.devctl-row:hover { background: var(--dsw-alias-bg-layer-1); }
 .devctl-git-item.is-current { color: var(--dsw-alias-brand-primary); font-weight: 600; }
 `
     function ensureChipCss() {
@@ -84,6 +87,10 @@ window.__ModuleLoader__.load({
           title: '项目运行器', subtitle: '状态面板 · 执行前确认',
           run: '运行', build: '打包', stop: '停止', refresh: '刷新',
           empty: '没有扫描到项目', noMatch: '没有匹配的项目', loading: '加载中…',
+          'emptyHint': '工作区根目录下需要有 package.json / pom.xml 的项目才会被识别',
+          'noMatchHint': '换个关键词，或清空搜索框看全部项目',
+          'expandGroup': '展开该分组',
+          'collapseGroup': '收起该分组',
           frontend: '前端', backend: '后端', fullstack: '全栈', tool: '工具',
           running: '运行中', building: '打包中', failed: '失败',
           pick: '选入', drop: '剔除', dropped: '已剔除', byUser: '面板剔除', byConfig: '配置排除',
@@ -212,6 +219,10 @@ window.__ModuleLoader__.load({
           title: 'Project runner', subtitle: 'Status panel · confirm before run',
           run: 'Run', build: 'Build', stop: 'Stop', refresh: 'Refresh',
           empty: 'No projects found', noMatch: 'No matching projects', loading: 'Loading…',
+          'emptyHint': 'projects need a package.json / pom.xml under the workspace root',
+          'noMatchHint': 'try another keyword or clear the search',
+          'expandGroup': 'Expand this group',
+          'collapseGroup': 'Collapse this group',
           frontend: 'Frontend', backend: 'Backend', fullstack: 'Full stack', tool: 'Tools',
           running: 'Running', building: 'Building', failed: 'Failed',
           pick: 'Include', drop: 'Exclude', dropped: 'Excluded', byUser: 'Excluded here', byConfig: 'Config exclude',
@@ -651,6 +662,17 @@ window.__ModuleLoader__.load({
             ? running.find((r) => r.runId === con.runId) || recent.find((r) => r.runId === con.runId)
             : null
 
+          // 分组折叠（localStorage 记忆）：项目多时收起不关心的组
+          const [collapsedGroups, setCollapsedGroups] = useState(() => {
+            try { return new Set(JSON.parse(localStorage.getItem('devctl.panel.collapsedGroups') || '[]')) } catch { return new Set() }
+          })
+          const toggleGroup = (g) => setCollapsedGroups((s) => {
+            const n = new Set(s)
+            if (n.has(g)) n.delete(g); else n.add(g)
+            try { localStorage.setItem('devctl.panel.collapsedGroups', JSON.stringify([...n])) } catch { /* 忽略 */ }
+            return n
+          })
+
           const styles = {
             layer: { position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 9000, fontFamily: 'inherit' },
             fab: {
@@ -680,18 +702,42 @@ window.__ModuleLoader__.load({
             },
             body: { overflowY: 'auto', padding: '4px 0', flex: 1, minHeight: 120 },
             groupTitle: { padding: '8px 12px 4px', fontSize: 11, color: 'var(--dsw-alias-label-secondary)' },
+            // 分组头（可折叠）：整行可点，计数徽标在右
+            groupHead: {
+              display: 'flex', alignItems: 'center', gap: 6, width: '100%',
+              padding: '8px 12px', fontSize: 11, fontWeight: 600,
+              color: 'var(--dsw-alias-label-secondary)', letterSpacing: 0.3,
+              background: 'transparent', border: 'none', cursor: 'pointer', textAlign: 'left',
+              borderTop: '1px solid var(--dsw-alias-border-l1)', marginTop: 4,
+            },
+            groupCount: {
+              marginLeft: 'auto', padding: '0 7px', borderRadius: 999, fontSize: 10,
+              background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-secondary)',
+            },
+            // 空状态：比一行灰字更能告诉用户"接下来该做什么"
+            emptyState: {
+              padding: '36px 16px', textAlign: 'center', color: 'var(--dsw-alias-label-secondary)', lineHeight: 1.8,
+            },
             liveTitle: { padding: '8px 12px 4px', fontSize: 11, color: 'var(--dsw-alias-label-secondary)', borderBottom: '1px solid var(--dsw-alias-border-l1)', marginBottom: 2 },
             row: { display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px' },
             name: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
             meta: { color: 'var(--dsw-alias-label-secondary)', fontSize: 11 },
+            // 按钮三分类（次操作 btn / 主操作 btnRun / 危险 btnStop + 弱化 btnGhost）：
+            // 统一 padding/字号/圆角，主/危险加浅色底，视觉层级一眼可辨
             btn: {
               border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent',
-              color: 'var(--dsw-alias-label-primary)', borderRadius: 6, padding: '2px 7px',
+              color: 'var(--dsw-alias-label-primary)', borderRadius: 6, padding: '3px 9px',
               fontSize: 11, cursor: 'pointer', whiteSpace: 'nowrap',
             },
-            btnRun: { borderColor: 'var(--dsw-alias-brand-primary)', color: 'var(--dsw-alias-brand-primary)' },
-            btnStop: { borderColor: 'var(--dsw-alias-state-error-primary)', color: 'var(--dsw-alias-state-error-primary)' },
-            btnGhost: { borderColor: 'transparent', color: 'var(--dsw-alias-label-secondary)' },
+            btnRun: {
+              borderColor: 'var(--dsw-alias-brand-primary)', color: 'var(--dsw-alias-brand-primary)',
+              background: 'color-mix(in srgb, var(--dsw-alias-brand-primary) 10%, transparent)',
+            },
+            btnStop: {
+              borderColor: 'var(--dsw-alias-state-error-primary)', color: 'var(--dsw-alias-state-error-primary)',
+              background: 'color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent)',
+            },
+            btnGhost: { borderColor: 'transparent', color: 'var(--dsw-alias-label-secondary)', background: 'transparent' },
             notice: {
               display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px',
               borderTop: '1px solid var(--dsw-alias-border-l1)', color: 'var(--dsw-alias-label-secondary)',
@@ -1622,7 +1668,17 @@ window.__ModuleLoader__.load({
           for (const g of GROUPS) {
             const list = grouped[g]
             if (!list || !list.length) continue
-            rows.push(h('div', { key: `g-${g}`, style: styles.groupTitle }, t(g)))
+            // 分组头：可折叠（localStorage 记忆），计数徽标在右
+            const gCollapsed = collapsedGroups.has(g)
+            rows.push(h('button', {
+              key: `g-${g}`, style: styles.groupHead,
+              onClick: () => toggleGroup(g),
+              title: gCollapsed ? t('expandGroup') : t('collapseGroup'),
+            },
+              h('span', { style: { width: '1em', flexShrink: 0 } }, gCollapsed ? '▸' : '▾'),
+              t(g),
+              h('span', { style: styles.groupCount }, String(list.length))))
+            if (gCollapsed) continue
             for (const p of list) {
               const runTasks = (p.tasks || []).filter((x) => x.kind === 'run')
               const buildTasks = (p.tasks || []).filter((x) => x.kind === 'build')
@@ -1639,7 +1695,7 @@ window.__ModuleLoader__.load({
               else meta = `${t('idle')} · ${p.type}${p.node ? ` · n${p.node}` : ''}${taskCount ? ` · ${taskCount} 个任务` : ''}`
 
               rows.push(
-                h('div', { key: p.id, style: styles.row },
+                h('div', { key: p.id, style: styles.row, className: 'devctl-row' },
                   h('div', {
                     style: styles.name,
                     title: [p.id, p.packageName && p.packageName !== p.id ? `package: ${p.packageName}` : null, p.basePort ? `端口 ${p.basePort}` : null].filter(Boolean).join('\n'),
@@ -1708,7 +1764,10 @@ window.__ModuleLoader__.load({
           }
 
           if (!loading && !visible.length) {
-            rows.push(h('div', { key: 'no-match', style: styles.groupTitle }, q ? t('noMatch') : t('empty')))
+            rows.push(h('div', { key: 'no-match', style: styles.emptyState },
+              h('div', { style: { fontSize: 22, lineHeight: 1.4 } }, q ? '🔍' : '▦'),
+              h('div', null, q ? t('noMatch') : t('empty')),
+              h('div', { style: { fontSize: 11 } }, q ? t('noMatchHint') : t('emptyHint'))))
           }
 
           if (excluded.length) {
@@ -1718,7 +1777,7 @@ window.__ModuleLoader__.load({
             }, `${t('dropped')} ${excluded.length}`))
             for (const e of excluded) {
               rows.push(
-                h('div', { key: `x-${e.id}`, style: styles.row },
+                h('div', { key: `x-${e.id}`, style: styles.row, className: 'devctl-row' },
                   h('div', { style: styles.name, title: e.pattern ? `排除规则: ${e.pattern}` : '' },
                     h('span', { style: { ...styles.meta, marginRight: 0 } }, e.id),
                     h('div', { style: styles.meta }, e.reason === 'user' ? t('byUser') : t('byConfig'))),
