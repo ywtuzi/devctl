@@ -243,7 +243,8 @@ export async function gitBranches(absPath) {
   const build = (withBase) => [
     'for-each-ref',
     '--sort=-committerdate',
-    `--format=%(refname)%09%(HEAD)%09%(upstream:short)%09%(upstream:track)${withBase ? `%09%(ahead-behind:${base})` : ''}`,
+    // subject/时间/短sha：每分支各一份，同一条命令带出，零额外 spawn
+    `--format=%(refname)%09%(HEAD)%09%(upstream:short)%09%(upstream:track)%09%(contents:subject)%09%(committerdate:relative)%09%(objectname:short)${withBase ? `%09%(ahead-behind:${base})` : ''}`,
     'refs/heads', 'refs/remotes',
   ]
   let withBase = Boolean(base)
@@ -257,7 +258,18 @@ export async function gitBranches(absPath) {
   const remote = []
   for (const line of r.out.split('\n')) {
     if (!line) continue
-    const [ref, headMark, upstream, track, vsBase] = line.split('\t')
+    // 字段顺序：refname/HEAD/upstream/track/subject/when/sha[/vsBase]。
+    // subject 理论上可含 \t（极罕见）：从尾部pop固定字段，剩余全部归 subject 容错
+    const parts = line.split('\t')
+    const ref = parts[0]
+    const headMark = parts[1]
+    const upstream = parts[2]
+    const track = parts[3]
+    const tail = parts.slice(4)
+    const vsBase = withBase ? tail.pop() : undefined
+    const sha = (tail.pop() || '').trim()
+    const when = (tail.pop() || '').trim()
+    const subject = tail.join('\t')
     // "(ahead behind)" 空格分隔：第一个是超前基准的提交数，第二个是落后者
     let baseAhead = null
     let baseBehind = null
@@ -287,11 +299,14 @@ export async function gitBranches(absPath) {
         gone,
         baseAhead,
         baseBehind,
+        subject: subject || null,
+        when: when || null,
+        sha: sha || null,
       })
     } else if (ref.startsWith('refs/remotes/')) {
       const name = ref.slice('refs/remotes/'.length)
-      // 远端分支同样带上相对基准分支的进度（origin/xxx 与 main 比）
-      if (!name.endsWith('/HEAD')) remote.push({ name, baseAhead, baseBehind })
+      // 远端分支同样带上相对基准分支的进度与最新提交（origin/xxx 与 main 比）
+      if (!name.endsWith('/HEAD')) remote.push({ name, baseAhead, baseBehind, subject: subject || null, when: when || null, sha: sha || null })
     }
   }
   return { ok: true, base: withBase ? base : null, local, remote }
@@ -390,6 +405,56 @@ export async function gitDiffFile(absPath, path, { staged = false } = {}) {
     'diff', '--no-color', '--unified=3', '--find-renames',
     ...(staged ? ['--cached'] : []), '--', path,
   ], 30000)
+}
+
+/* ------------------------------ numstat：行数统计 ------------------------------ */
+
+/** numstat 第三列的重命名形态归一到新路径：`a => b`、`dir/{o => n}.js` */
+export function numstatNewPath(raw) {
+  let p = String(raw).replace(/\{([^{}]*?) => ([^{}]*?)\}/g, '$2')
+  const arrow = p.match(/^(.*) => (.*)$/)
+  if (arrow) p = arrow[2]
+  return p
+}
+
+/** 解析 `git diff --numstat` 输出：{ [新路径]: { add, del } }；二进制为 null/null */
+export function parseNumstat(out) {
+  const map = {}
+  for (const line of String(out || '').split('\n')) {
+    if (!line) continue
+    const m = line.match(/^(\d+|-)\t(\d+|-)\t(.+)$/)
+    if (!m) continue
+    map[numstatNewPath(m[3])] = {
+      add: m[1] === '-' ? null : Number(m[1]),
+      del: m[2] === '-' ? null : Number(m[2]),
+    }
+  }
+  return map
+}
+
+/**
+ * 全仓行数统计（工作区 vs 暂存区 / 暂存区 vs HEAD 各一条，并行 spawn）。
+ * 仅供 git 面板文件行 +N −M 与目录聚合展示；上限 NUMSTAT_MAX 个文件防巨仓撑爆响应。
+ */
+const NUMSTAT_MAX = 1000
+
+export async function gitNumstat(absPath) {
+  const [w, s] = await Promise.all([
+    git(absPath, ['diff', '--numstat', '--find-renames'], 30000),
+    git(absPath, ['diff', '--cached', '--numstat', '--find-renames'], 30000),
+  ])
+  const clip = (m) => {
+    const keys = Object.keys(m)
+    if (keys.length <= NUMSTAT_MAX) return m
+    const out = {}
+    for (const k of keys.slice(0, NUMSTAT_MAX)) out[k] = m[k]
+    return out
+  }
+  return {
+    ok: w.ok || s.ok,
+    worktree: clip(parseNumstat(w.out)),
+    staged: clip(parseNumstat(s.out)),
+  }
 }
 
 /**

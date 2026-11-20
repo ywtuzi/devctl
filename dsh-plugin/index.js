@@ -618,11 +618,13 @@ export function apply(ctx, config) {
         try {
           const { gitMod } = await loadMods(cli)
           if (!gitDetailCache || gitDetailCache.id !== id || Date.now() - gitDetailCache.at > 30000) {
-            const [status, branches] = await Promise.all([
+            // status / branches / numstat 三条并行：墙钟 ≈ 单条 spawn（~1s，慢机器为主）
+            const [status, branches, numstat] = await Promise.all([
               gitMod.gitStatusDetail(project.absPath),
               gitMod.gitBranches(project.absPath),
+              gitMod.gitNumstat(project.absPath),
             ])
-            gitDetailCache = { id, at: Date.now(), value: { absPath: project.absPath, status, branches } }
+            gitDetailCache = { id, at: Date.now(), value: { absPath: project.absPath, status, branches, numstat } }
           }
           return send(res, 200, { id, ...gitDetailCache.value })
         } catch (e) {

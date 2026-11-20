@@ -71,6 +71,17 @@ window.__ModuleLoader__.load({
 .devctl-row:hover { background: var(--dsw-alias-bg-layer-1); }
 /* 关闭按钮：无边框 ×，hover 加底变亮（常见模态关闭样式） */
 .devctl-close-btn:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
+/* ---- 布局规范化（容器查询：窄态收次要徽标，宽态限行长）---- */
+.devctl-panel-root { container-type: inline-size; }
+.devctl-panel-root :is(button, input, [tabindex]):focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px;
+}
+@container (max-width: 379px) {
+  .devctl-badge-optional { display: none; }
+}
+@container (min-width: 700px) {
+  .devctl-readable { max-width: 680px; }
+}
 /* 变更文件行：整行可点（切换暂存），hover 反馈；冲突行浅红底 */
 .devctl-file-row { outline: none; border-radius: 4px; cursor: pointer; }
 .devctl-file-row:hover { background: var(--dsw-alias-bg-layer-2); }
@@ -222,6 +233,7 @@ window.__ModuleLoader__.load({
           'git.diffEmpty': '没有差异内容',
           'git.openFull': '完整文件',
           'git.openFullTip': '在右侧边栏以文件预览打开完整内容',
+          'git.legend': '+ 新增（已暂存的新文件）\n~ 修改（内容有改动）\n- 删除\n→ 重命名（悬浮看旧路径）\n? 未跟踪的新文件\n⚠ 合并冲突未解决\n\n目录后的数字 = 该目录下的变更文件总数',
           'git.stageTip': '加入待提交区（git add）',
           'git.unstageTip': '移出待提交区（git reset HEAD，不动文件内容）',
           'git.stageConflictTip': '标记冲突已解决并加入待提交区（git add）',
@@ -361,6 +373,7 @@ window.__ModuleLoader__.load({
           'git.diffEmpty': 'no differences',
           'git.openFull': 'Full file',
           'git.openFullTip': 'open the full file in the sidebar preview',
+          'git.legend': '+ added (staged new file)\n~ modified\n- deleted\n→ renamed (hover for old path)\n? untracked new file\n⚠ unresolved merge conflict\n\nthe number after a folder = changed files under it',
           'git.stageTip': 'stage this file (git add)',
           'git.unstageTip': 'unstage (git reset HEAD; file content untouched)',
           'git.stageConflictTip': 'mark conflict resolved and stage (git add)',
@@ -730,6 +743,11 @@ window.__ModuleLoader__.load({
             return n
           })
 
+          /* ---- 设计令牌（4/8pt 栅格 + 三档字号）----
+           * 间距：4 的倍数，主节奏 8；区头距上 8 / 内容距 12 / 区间距 16
+           * 字号：11（辅助/等宽）· 12（正文）· 13（强调）；glyph 图标例外
+           * 行高：列表行 ≥28px，点击目标 ≥24×24（WCAG 2.5.5）
+           * 滚动：面板 body 是唯一主滚动容器，内嵌清单内滚且 contain 防穿透 */
           const styles = {
             layer: { position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 9000, fontFamily: 'inherit' },
             fab: {
@@ -757,7 +775,7 @@ window.__ModuleLoader__.load({
               border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-1)',
               color: 'var(--dsw-alias-label-primary)', outline: 'none',
             },
-            body: { overflowY: 'auto', padding: '4px 0', flex: 1, minHeight: 120 },
+            body: { overflowY: 'auto', overscrollBehavior: 'contain', padding: '4px 0', flex: 1, minHeight: 120 },
             groupTitle: { padding: '8px 12px 4px', fontSize: 11, color: 'var(--dsw-alias-label-secondary)' },
             // 分组头（可折叠）：整行可点，计数徽标在右
             groupHead: {
@@ -776,7 +794,7 @@ window.__ModuleLoader__.load({
               padding: '36px 16px', textAlign: 'center', color: 'var(--dsw-alias-label-secondary)', lineHeight: 1.8,
             },
             liveTitle: { padding: '8px 12px 4px', fontSize: 11, color: 'var(--dsw-alias-label-secondary)', borderBottom: '1px solid var(--dsw-alias-border-l1)', marginBottom: 2 },
-            row: { display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px' },
+            row: { display: 'flex', alignItems: 'center', gap: 6, padding: '4px 12px', minHeight: 28 },
             name: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
             meta: { color: 'var(--dsw-alias-label-secondary)', fontSize: 11 },
             // 按钮三分类（次操作 btn / 主操作 btnRun / 危险 btnStop + 弱化 btnGhost）：
@@ -822,7 +840,8 @@ window.__ModuleLoader__.load({
             taskGroupLabel: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', marginTop: 2 },
             overlay: {
               position: 'absolute', inset: 0, background: 'var(--dsw-alias-bg-overlay)',
-              display: 'flex', flexDirection: 'column', overflowY: 'auto', padding: '12px 14px',
+              display: 'flex', flexDirection: 'column', overflowY: 'auto',
+              overscrollBehavior: 'contain', padding: '12px 14px',
             },
             // 面包屑导航条：页面级覆盖层（git/控制台/提交）的定位标识
             crumb: {
@@ -840,7 +859,7 @@ window.__ModuleLoader__.load({
             // 上层页面保持可见，用户始终知道自己在哪
             drawer: {
               position: 'absolute', left: 0, right: 0, bottom: 0, maxHeight: '68%',
-              overflowY: 'auto', background: 'var(--dsw-alias-bg-overlay)',
+              overflowY: 'auto', overscrollBehavior: 'contain', background: 'var(--dsw-alias-bg-overlay)',
               borderTop: '1px solid var(--dsw-alias-border-l1)',
               boxShadow: '0 -8px 24px rgba(0,0,0,0.25)', padding: '12px 14px',
               display: 'flex', flexDirection: 'column', zIndex: 20,
@@ -891,12 +910,12 @@ window.__ModuleLoader__.load({
               borderColor: 'color-mix(in srgb, var(--dsw-alias-state-success-primary) 45%, var(--dsw-alias-border-l1))',
             },
             zoneHead: {
-              display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px',
+              display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px',
               background: 'var(--dsw-alias-bg-layer-2)',
               borderBottom: '1px solid var(--dsw-alias-border-l1)',
             },
             zoneBody: {
-              maxHeight: 200, overflowY: 'auto', padding: '4px 8px',
+              maxHeight: 200, overflowY: 'auto', overscrollBehavior: 'contain', padding: '4px 8px',
               background: 'var(--dsw-alias-bg-layer-1)',
               fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
             },
@@ -1156,7 +1175,7 @@ window.__ModuleLoader__.load({
               conflict: 'var(--dsw-alias-state-error-primary)',
             }
 
-            // 目录树：files → { dirs: Map<seg,node>, files: [] }，node 带计数
+            // 目录树：files → { dirs: Map<seg,node>, files: [] }，node 带 {n,add,del} 聚合
             const buildTree = (files) => {
               const root = { dirs: new Map(), files: [] }
               for (const f of files) {
@@ -1172,14 +1191,41 @@ window.__ModuleLoader__.load({
               }
               return root
             }
-            const countTree = (node) => node.files.length + [...node.dirs.values()].reduce((s, d) => s + countTree(d), 0)
+            // numstat 行数映射：staged/worktree 按区取；缺失（缓存旧/超限）返回 null
+            const nsOf = (side) => {
+              const ns = d && d.numstat
+              if (!ns || !ns.ok) return null
+              return side === 'staged' ? ns.staged : ns.worktree
+            }
+            const statOf = (side, path) => {
+              const m = nsOf(side)
+              return m ? m[path] || null : null
+            }
+            const countTree = (node, side) => {
+              let n = node.files.length, add = 0, del = 0, has = false
+              for (const f of node.files) {
+                const s = statOf(side, f.path)
+                if (s) { has = true; add += s.add || 0; del += s.del || 0 }
+              }
+              for (const sub of node.dirs.values()) {
+                const r = countTree(sub, side)
+                n += r.n; if (r.has) { has = true; add += r.add; del += r.del }
+              }
+              return { n, add, del, has }
+            }
 
-            // 树 → 行数组（目录行可折叠；文件行带 暂存/取消暂存 按钮）
+            // 树 → 行数组（目录行可折叠 + 整目录暂存/取消；文件行带 暂存/取消暂存 按钮）
+            const collectPaths = (node) => [
+              ...node.files.map((f) => f.path),
+              ...[...node.dirs.values()].flatMap(collectPaths),
+            ]
             const treeRows = (node, dirPath, depth, side) => {
               const rows = []
               for (const d of [...node.dirs.values()].sort((a, b) => a.name.localeCompare(b.name))) {
                 const key = dirPath ? `${dirPath}/${d.name}` : d.name
                 const collapsed = gitCollapsedDirs.has(key)
+                // 目录聚合：优先 +N −M 行数（numstat 汇总），无统计时退回文件数
+                const agg = countTree(d, side)
                 rows.push(h('div', {
                   key: `d-${key}`,
                   style: { display: 'flex', alignItems: 'center', gap: 4, padding: '1px 0 1px ' + (depth * 12) + 'px', fontSize: 11, cursor: 'pointer', userSelect: 'none' },
@@ -1191,7 +1237,28 @@ window.__ModuleLoader__.load({
                 },
                   h('span', { style: { width: '1em', flexShrink: 0, color: 'var(--dsw-alias-label-secondary)' } }, collapsed ? '▸' : '▾'),
                   h('span', { style: { color: 'var(--dsw-alias-label-secondary)', fontWeight: 600 } }, `${d.name}/`),
-                  h('span', { style: { ...styles.meta, fontSize: 10 } }, String(countTree(d)))))
+                  agg.has
+                    ? h('span', { style: { fontSize: 10, flexShrink: 0 }, title: `${agg.n} 个变更文件 · 新增 ${agg.add} 行 / 删除 ${agg.del} 行` },
+                        h('span', { style: { color: 'var(--dsw-alias-state-success-primary)' } }, `+${agg.add}`),
+                        ' ',
+                        h('span', { style: { color: 'var(--dsw-alias-state-error-primary)' } }, `−${agg.del}`))
+                    : h('span', { style: { ...styles.meta, fontSize: 10 }, title: '该目录下的变更文件总数' }, String(agg.n)),
+                  // 整目录暂存/取消（子树全部文件一次提交给 git add / reset）
+                  h('button', {
+                    style: {
+                      ...styles.btn, ...styles.btnGhost, marginLeft: 'auto', flexShrink: 0,
+                      width: 26, height: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: 16, fontWeight: 600, padding: 0, borderRadius: 5,
+                    },
+                    disabled: isBusy || Boolean(gitPanel.cmdBusy),
+                    title: side === 'staged'
+                      ? `${t('git.unstageAll')}（${agg.n} 个文件）`
+                      : `${t('git.stageAll')}（${agg.n} 个文件）`,
+                    onClick: (e) => {
+                      e.stopPropagation()
+                      stageAction(side === 'staged' ? 'unstage' : 'stage', collectPaths(d))
+                    },
+                  }, gitPanel.cmdBusy && (side === 'staged' ? 'unstage' : 'stage') ? '…' : side === 'staged' ? '−' : '+')))
                 if (!collapsed) rows.push(...treeRows(d, key, depth + 1, side))
               }
               for (const f of node.files.slice().sort((a, b) => a.path.localeCompare(b.path))) {
@@ -1228,13 +1295,28 @@ window.__ModuleLoader__.load({
                   }),
                   h('span', { style: { width: '1em', flexShrink: 0, color } }, fileMark[f.state] || '·'),
                   h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', color: f.state === 'conflict' || f.state === 'deleted' ? color : 'inherit' } }, name),
+                  // 行数统计（numstat，来自 git-detail 同批数据）：+N 绿 / −M 红；二进制/无数据显示 -
+                  (() => {
+                    const s = statOf(side, f.path)
+                    if (!s) return null
+                    return h('span', {
+                      style: { flexShrink: 0, fontSize: 10, whiteSpace: 'nowrap', opacity: 0.85 },
+                      title: `新增 ${s.add ?? '?'} 行 / 删除 ${s.del ?? '?'} 行`,
+                    },
+                      s.add == null && s.del == null
+                        ? h('span', { style: { ...styles.meta } }, 'bin')
+                        : h('span', null,
+                            h('span', { style: { color: 'var(--dsw-alias-state-success-primary)' } }, `+${s.add || 0}`),
+                            ' ',
+                            h('span', { style: { color: 'var(--dsw-alias-state-error-primary)' } }, `−${s.del || 0}`)))
+                  })(),
                   side === 'staged'
                     ? h('button', {
                         style: {
                           ...styles.btn, ...styles.btnGhost,
-                          width: 22, height: 22, flexShrink: 0,
+                          width: 26, height: 26, flexShrink: 0,
                           display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                          fontSize: 14, fontWeight: 600, padding: 0, borderRadius: 5,
+                          fontSize: 16, fontWeight: 600, padding: 0, borderRadius: 5,
                         },
                         disabled: isBusy || Boolean(gitPanel.cmdBusy),
                         title: t('git.unstageTip'),
@@ -1243,9 +1325,9 @@ window.__ModuleLoader__.load({
                     : h('button', {
                         style: {
                           ...styles.btn, ...styles.btnGhost,
-                          width: 22, height: 22, flexShrink: 0,
+                          width: 26, height: 26, flexShrink: 0,
                           display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                          fontSize: 14, fontWeight: 600, padding: 0, borderRadius: 5,
+                          fontSize: 16, fontWeight: 600, padding: 0, borderRadius: 5,
                         },
                         disabled: isBusy || Boolean(gitPanel.cmdBusy),
                         title: f.state === 'conflict' ? t('git.stageConflictTip') : t('git.stageTip'),
@@ -1294,16 +1376,17 @@ window.__ModuleLoader__.load({
             const qBranch = gitQuery.trim().toLowerCase()
             const localAll = (br && br.local) || []
             const match = (n) => !qBranch || n.toLowerCase().includes(qBranch)
-            const curDef = localAll.find((b) => b.current)
-            const others = localAll
-              .filter((b) => !b.current && match(b.name))
-              .sort((a, b) => a.name.localeCompare(b.name))
+            // 本地分支展示列表：当前分支置顶，其余按名排序
+            const locals = localAll
+              .filter((b) => match(b.name))
+              .sort((a, b) => (b.current ? 1 : 0) - (a.current ? 1 : 0) || a.name.localeCompare(b.name))
             const remotes = ((br && br.remote) || []).filter((r) => match(r.name))
 
-            // GitLens 风格徽标
-            const badge = (text, color, title) =>
+            // GitLens 风格徽标；optional=true 的在窄态（<380px 容器）自动隐藏
+            const badge = (text, color, title, optional) =>
               h('span', {
                 title,
+                className: optional ? 'devctl-badge-optional' : undefined,
                 style: {
                   display: 'inline-flex', alignItems: 'center', padding: '1px 6px', marginLeft: 4,
                   borderRadius: 999, fontSize: 10, fontWeight: 600,
@@ -1321,8 +1404,8 @@ window.__ModuleLoader__.load({
             const remoteBadge = (b) => {
               if (b.upstream) return null
               return hasRemoteTwin(b.name)
-                ? badge(t('git.notTracking'), 'var(--dsw-alias-state-warn-primary)', t('git.notTrackingTip'))
-                : badge(t('git.noRemote'), 'var(--dsw-alias-label-secondary)', t('git.noRemoteTip'))
+                ? badge(t('git.notTracking'), 'var(--dsw-alias-state-warn-primary)', t('git.notTrackingTip'), true)
+                : badge(t('git.noRemote'), 'var(--dsw-alias-label-secondary)', t('git.noRemoteTip'), true)
             }
 
             // 相对基准分支（main/master）的进度：GitLab 式「落后|超前」
@@ -1336,7 +1419,7 @@ window.__ModuleLoader__.load({
               const color = b.baseBehind
                 ? 'var(--dsw-alias-state-warn-primary)'
                 : 'var(--dsw-alias-state-success-primary)'
-              return badge(`${b.baseBehind}|${b.baseAhead}`, color, title)
+              return badge(`${b.baseBehind}|${b.baseAhead}`, color, title, true)
             }
 
             // 分支行：整行可点（GitLens 式），右侧 hover 提示
@@ -1354,11 +1437,29 @@ window.__ModuleLoader__.load({
               return null
             }
 
+            // 分支行（GitLens 式两行）：行1 = 名称 + 徽标 + 相对时间；行2 = 短sha + 提交主题（悬浮全文）
+            const commitLine = (b) =>
+              b.subject || b.sha
+                ? h('div', {
+                    style: {
+                      ...styles.meta, fontSize: 10, padding: '0 8px 2px 24px',
+                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    },
+                    title: [b.sha, b.subject, b.when].filter(Boolean).join(' · '),
+                  },
+                  b.sha ? h('span', { style: { fontFamily: 'ui-monospace, Consolas, monospace', opacity: 0.8 } }, b.sha) : null,
+                  b.sha && b.subject ? ' ' : null,
+                  b.subject || '')
+                : null
+
             const branchRow = (b, section) =>
               h('div', {
                 key: `${section}-${b.name}`,
-                style: { display: 'flex', alignItems: 'center', gap: 6, padding: '3px 8px', borderRadius: 6 },
+                style: { padding: '1px 0' },
               },
+                h('div', {
+                  style: { display: 'flex', alignItems: 'center', gap: 6, padding: '3px 8px', borderRadius: 6 },
+                },
                 h('button', {
                   className: b.current ? 'devctl-git-item is-current' : 'devctl-git-item',
                   style: { display: 'flex', alignItems: 'center', gap: 6, padding: '2px 4px', borderRadius: 6, border: 'none', cursor: b.current ? 'default' : 'pointer', color: 'inherit', fontSize: 12, flex: 1, minWidth: 0 },
@@ -1397,7 +1498,10 @@ window.__ModuleLoader__.load({
                       title: t('git.mergeTip'),
                       onClick: () => requestGitAction('merge', gitPanel.id, b.name),
                     }, gitPanel.cmdBusy === 'merge' ? '…' : `⇤ ${t('git.merge')}`)
-                  : null)
+                  : null,
+                // 相对时间（行尾，次级色）
+                b.when ? h('span', { style: { ...styles.meta, fontSize: 10, flexShrink: 0 }, title: b.subject || '' }, b.when) : null),
+                commitLine(b))
 
             return h('div', { style: { ...styles.overlay, padding: '10px 12px' } },
               // 面包屑 + 刷新：定位 = 项目列表 / <id> · Git（负边距让导航条通栏）
@@ -1408,19 +1512,42 @@ window.__ModuleLoader__.load({
                 ]),
                 h('button', { style: { ...styles.btn, marginRight: 12 }, disabled: isBusy, onClick: () => openGitPanel(gitPanel.id), title: t('git.refresh') }, '⟳')),
 
-              // 状态卡（hero）：当前分支 + 徽标，品牌色左色条点出页面主角
+              // 状态卡（hero）：左 = 当前分支 + 徽标；右 = 同步操作（拉取/更新/提交/推送）。
+              // 操作放顶部与分支状态同屏第一眼可见（GitLens 式布局）
               h('div', { style: styles.gitHero },
-                h('div', { style: { display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' } },
-                  h('span', { style: { ...styles.dot, ...(dirty ? { background: 'var(--dsw-alias-state-warn-primary)' } : {}) } }),
-                  h('b', { style: { fontSize: 13 } }, `⎇ ${curBranch}`),
-                  ahead != null && ahead > 0 ? badge(`↑${ahead}`, 'var(--dsw-alias-state-success-primary)', t('git.aheadTip')) : null,
-                  behind != null && behind > 0 ? badge(`↓${behind}`, 'var(--dsw-alias-state-warn-primary)', t('git.behindTip')) : null,
-                  dirty != null && dirty > 0
-                    ? badge(`±${dirty}`, 'var(--dsw-alias-state-warn-primary)', t('git.dirty'))
-                    : dirty === 0 ? badge('✓', 'var(--dsw-alias-state-success-primary)', t('git.clean')) : null),
-                h('div', { style: styles.meta },
-                  [st && st.ok ? st.upstream || t('git.noUpstream') : null,
-                   st && st.ok && st.untracked ? `${st.untracked} ${t('git.untracked')}` : null].filter(Boolean).join(' · '))),
+                h('div', { style: { display: 'flex', alignItems: 'flex-start', gap: 8 } },
+                  h('div', { style: { flex: 1, minWidth: 0 } },
+                    h('div', { style: { display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' } },
+                      h('span', { style: { ...styles.dot, ...(dirty ? { background: 'var(--dsw-alias-state-warn-primary)' } : {}) } }),
+                      h('b', { style: { fontSize: 13 } }, `⎇ ${curBranch}`),
+                      ahead != null && ahead > 0 ? badge(`↑${ahead}`, 'var(--dsw-alias-state-success-primary)', t('git.aheadTip')) : null,
+                      behind != null && behind > 0 ? badge(`↓${behind}`, 'var(--dsw-alias-state-warn-primary)', t('git.behindTip')) : null,
+                      dirty != null && dirty > 0
+                        ? badge(`±${dirty}`, 'var(--dsw-alias-state-warn-primary)', t('git.dirty'))
+                        : dirty === 0 ? badge('✓', 'var(--dsw-alias-state-success-primary)', t('git.clean')) : null),
+                    h('div', { style: styles.meta },
+                      [st && st.ok ? st.upstream || t('git.noUpstream') : null,
+                       st && st.ok && st.untracked ? `${st.untracked} ${t('git.untracked')}` : null].filter(Boolean).join(' · '))),
+                  // 同步操作：behind>0 pull 高亮、待提交区有内容 commit 高亮、ahead>0 push 高亮
+                  h('div', { style: { display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' } },
+                    h('button', { style: { ...styles.btn, fontSize: 10, padding: '2px 8px' }, disabled: isBusy, title: t('git.confirm.fetch'), onClick: () => requestGitAction('fetch', gitPanel.id) }, `⟳ ${t('git.fetch')}`),
+                    h('button', {
+                      style: { ...(behind > 0 ? { ...styles.btn, ...styles.btnRun } : styles.btn), fontSize: 10, padding: '2px 8px' },
+                      disabled: isBusy, title: t('git.confirm.pull'),
+                      onClick: () => requestGitAction('pull', gitPanel.id),
+                    }, `⇣ ${t('git.pull')}${behind > 0 ? ` (${behind})` : ''}`),
+                    h('button', {
+                      style: { ...(stagedFiles.length > 0 ? { ...styles.btn, ...styles.btnRun } : styles.btn), fontSize: 10, padding: '2px 8px' },
+                      disabled: isBusy || !stagedFiles.length,
+                      title: stagedFiles.length > 0 ? `${t('git.commitTitle')}（${stagedFiles.length} ${t('git.staged')}）` : t('git.commitNudge'),
+                      onClick: () => setGitCommitDraft({ id: gitPanel.id, msg: '' }),
+                    }, `✎ ${t('git.commit')}${stagedFiles.length > 0 ? ` (${stagedFiles.length})` : ''}`),
+                    h('button', {
+                      style: { ...(ahead > 0 ? { ...styles.btn, ...styles.btnRun } : styles.btn), fontSize: 10, padding: '2px 8px' },
+                      disabled: isBusy || !ahead,
+                      title: ahead > 0 ? t('git.pushTip') : t('git.aheadTip'),
+                      onClick: () => requestGitAction('push', gitPanel.id),
+                    }, `↑ ${t('git.push')}${ahead > 0 ? ` (${ahead})` : ''}`)))),
 
               // 冲突横幅：merge 撞冲突时 git 停在未合并状态，这里给出「放弃合并」出口
               st && st.ok && st.conflicts > 0
@@ -1474,6 +1601,14 @@ window.__ModuleLoader__.load({
                           : null,
                       ]
                     })(),
+                    // 状态图例：悬浮显示完整对照表（含目录计数说明），零渲染开销
+                    h('button', {
+                      style: {
+                        ...styles.btn, ...styles.btnGhost, padding: '1px 6px', fontSize: 10, marginLeft: 'auto',
+                      },
+                      title: t('git.legend'),
+                      tabIndex: -1,
+                    }, 'ⓘ'),
                     // 变更文件双区树（默认展开）：待提交 / 变更，逐文件或全部暂存
                     showFiles
                       ? h('div', { key: 'files', style: { width: '100%' } },
@@ -1484,27 +1619,6 @@ window.__ModuleLoader__.load({
                             : null)
                       : null)
                 : null,
-
-              // 操作栏：behind>0 时 pull 高亮；dirty>0 提交可点；ahead>0 推送高亮
-              h('div', { style: styles.conToolbar },
-                h('button', { style: styles.btn, disabled: isBusy, title: t('git.confirm.fetch'), onClick: () => requestGitAction('fetch', gitPanel.id) }, `⟳ ${t('git.fetch')}`),
-                h('button', {
-                  style: behind > 0 ? { ...styles.btn, ...styles.btnRun } : styles.btn,
-                  disabled: isBusy, title: t('git.confirm.pull'),
-                  onClick: () => requestGitAction('pull', gitPanel.id),
-                }, `⇣ ${t('git.pull')}${behind > 0 ? ` (${behind})` : ''}`),
-                h('button', {
-                  style: stagedFiles.length > 0 ? { ...styles.btn, ...styles.btnRun } : styles.btn,
-                  disabled: isBusy || !stagedFiles.length,
-                  title: stagedFiles.length > 0 ? `${t('git.commitTitle')}（${stagedFiles.length} ${t('git.staged')}）` : t('git.commitNudge'),
-                  onClick: () => setGitCommitDraft({ id: gitPanel.id, msg: '' }),
-                }, `✎ ${t('git.commit')}${stagedFiles.length > 0 ? ` (${stagedFiles.length})` : ''}`),
-                h('button', {
-                  style: ahead > 0 ? { ...styles.btn, ...styles.btnRun } : styles.btn,
-                  disabled: isBusy || !ahead,
-                  title: ahead > 0 ? t('git.pushTip') : t('git.aheadTip'),
-                  onClick: () => requestGitAction('push', gitPanel.id),
-                }, `↑ ${t('git.push')}${ahead > 0 ? ` (${ahead})` : ''}`)),
 
               gitPanel.loading ? h('div', { style: { ...styles.meta, padding: '12px 0' } }, t('loading')) : null,
               gitPanel.error ? h('div', { style: { color: 'var(--dsw-alias-state-error-primary)', padding: '8px 0' } }, gitPanel.error) : null,
@@ -1523,17 +1637,15 @@ window.__ModuleLoader__.load({
                             onChange: (e) => setGitQuery(e.target.value),
                           }))
                       : null,
-                    curDef && match(curDef.name)
-                      ? h('div', { style: { marginTop: 8 } },
-                          branchRow(curDef, 'cur'))
-                      : null,
-                    others.length
+                    // 本地分支列表：当前分支不单独拎出（顶部状态卡已显示），
+                    // 与其他分支同列，● 圆点 + 「当前」标记区分，排序置顶
+                    locals.length
                       ? h('div', null,
                           h('div', { style: styles.sectionHead },
                             h('span', null, t('git.local')),
-                            h('span', { style: styles.groupCount }, String(others.length)),
+                            h('span', { style: styles.groupCount }, String(locals.length)),
                             br.base ? h('span', { style: { ...styles.meta, fontSize: 10, marginLeft: 4 } }, `${t('git.vsBase')} ${br.base}`) : null),
-                          others.map((b) => branchRow(b, 'local')))
+                          locals.map((b) => branchRow(b, 'local')))
                       : null,
                     remotes.length
                       ? h('div', { style: { marginTop: 10 } },
@@ -1545,18 +1657,20 @@ window.__ModuleLoader__.load({
                             // 去掉 origin/ 前缀：git switch <name> 会 DWIM 自动建本地跟踪分支
                             const short = r.name.replace(/^[^/]+\//, '')
                             const exists = localAll.some((b) => b.name === short)
-                            return h('button', {
-                              key: `remote-${r.name}`,
-                              className: 'devctl-git-item',
-                              style: { display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px', borderRadius: 6, border: 'none', cursor: 'pointer', color: 'inherit', fontSize: 12 },
-                              disabled: isBusy,
-                              onClick: () => requestGitAction('switch', gitPanel.id, short),
-                              title: exists ? t('git.switchTo') + short : `${t('git.trackCreate')} ${short}`,
-                            },
-                              h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, `  ${short}`),
-                              // 远端分支同样给「落后|超前 main」的进度（与本地分支同源、同一条 for-each-ref）
-                              baseBadge(r),
-                              h('span', { style: { ...styles.meta, fontSize: 10 } }, exists ? '' : '+track'))
+                            return h('div', { key: `remote-${r.name}`, style: { padding: '1px 0' } },
+                              h('button', {
+                                className: 'devctl-git-item',
+                                style: { display: 'flex', alignItems: 'center', gap: 6, padding: '3px 8px', borderRadius: 6, border: 'none', cursor: 'pointer', color: 'inherit', fontSize: 12, width: '100%' },
+                                disabled: isBusy,
+                                onClick: () => requestGitAction('switch', gitPanel.id, short),
+                                title: exists ? t('git.switchTo') + short : `${t('git.trackCreate')} ${short}`,
+                              },
+                                h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'left' } }, `  ${short}`),
+                                // 远端分支同样给「落后|超前 main」的进度（与本地分支同源、同一条 for-each-ref）
+                                baseBadge(r),
+                                exists ? null : h('span', { style: { ...styles.meta, fontSize: 10 } }, '+track'),
+                                r.when ? h('span', { style: { ...styles.meta, fontSize: 10, flexShrink: 0 } }, r.when) : null),
+                              commitLine(r))
                           }))
                       : null)
                 : null)
@@ -2117,6 +2231,7 @@ window.__ModuleLoader__.load({
           // position:relative 让内部 inset:0 的 git/确认/控制台覆盖层有正确定位基准
           return h('div', {
             ref: rootRef,
+            className: 'devctl-panel-root',
             style: {
               ...styles.panel,
               position: 'relative', width: '100%', height: '100%',

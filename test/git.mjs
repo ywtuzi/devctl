@@ -1,5 +1,5 @@
-// git 输出解析测试（纯函数，不 spawn git）
-import { parseStatusSb, readBranchFast, findGitDir } from '../src/git.js'
+// git 集成：分支直读（零 spawn）+ 按需 status/branches + 显式操作
+import { parseStatusSb, readBranchFast, findGitDir, parseNumstat, numstatNewPath } from '../src/git.js'
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -50,6 +50,18 @@ ok('staged flag', r.files.find((f) => f.path === 'new.js')?.staged === true && r
   const rr = parseStatusSb(many)
   ok('files truncated', rr.files.length === 300 && rr.filesTruncated === true)
   ok('counts not truncated', rr.fileCounts.modified === 400)
+}
+
+// numstat 解析：普通 / 二进制 / 全量重命名 / 花括号重命名
+{
+  const m = parseNumstat('12\t3\tsrc/a.js\n-\t-\tlogo.png\n5\t0\told.js => new.js\n2\t1\tsrc/{v1 => v2}/b.js\n')
+  ok('numstat plain', m['src/a.js'] && m['src/a.js'].add === 12 && m['src/a.js'].del === 3)
+  ok('numstat binary', m['logo.png'] && m['logo.png'].add === null && m['logo.png'].del === null)
+  ok('numstat rename full → new path', m['new.js'] && m['new.js'].add === 5)
+  ok('numstat rename brace → new path', m['src/v2/b.js'] && m['src/v2/b.js'].add === 2)
+  ok('numstat ignores junk', parseNumstat('garbage\n\n1\t1\tx\n')['x'].del === 1)
+  ok('numstatNewPath brace', numstatNewPath('a/{o => n}/c.ts') === 'a/n/c.ts')
+  ok('numstatNewPath full', numstatNewPath('p/q => r/s') === 'r/s')
 }
 
 // readBranchFast：临时目录构造 .git
