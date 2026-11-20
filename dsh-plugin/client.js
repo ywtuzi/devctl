@@ -14,8 +14,6 @@ window.__ModuleLoader__.load({
     const { useState, useEffect, useCallback, useRef } = React
 
     const API = '/devctl-api'
-    const LS_OPEN = 'devctl.panel.open'
-    const LS_WIDTH = 'devctl.panel.width'
     // ANSI 转义序列（颜色/光标移动）：日志入口处 strip，渲染期零处理
     const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g
     const stripAnsi = (s) => (s ? s.replace(ANSI_RE, '') : s)
@@ -79,7 +77,7 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      inject: ['slots', 'locale'],
+      inject: ['slots', 'locale', 'sidebarRight', 'sidebarRightTabs'],
       apply(ctx) {
         ensureChipCss()
         ctx.locale.register('devctl', 'zh', {
@@ -306,17 +304,32 @@ window.__ModuleLoader__.load({
         })
         const t = ctx.locale.bind('devctl')
 
+        // FAB 快捷入口：不再自带浮层，点击打开右侧边栏的 devctl tab
+        // （右侧边栏可折叠/拖宽/浮出为浮动面板，宽高交给宿主管）
+        function DevctlFab() {
+          const [count, setCount] = useState(0)
+          useEffect(() => {
+            // 仅计数用：10s 一次轻轮询，面板 tab 自己的 3s 轮询不受影响
+            let alive = true
+            const load = async () => {
+              try {
+                const d = await call('/status')
+                if (alive) setCount((d.running || []).length + (d.recent || []).filter((r) => r.status === 'building').length)
+              } catch { /* 后台计数失败静默 */ }
+            }
+            load()
+            const timer = setInterval(load, 10000)
+            return () => { alive = false; clearInterval(timer) }
+          }, [])
+          return h('div', { style: styles.layer },
+            h('button', {
+              style: styles.fab,
+              onClick: () => ctx.sidebarRight.openTab('devctl'),
+              title: t('subtitle'),
+            }, '▦ ', t('title'), count ? ` · ${count}` : ''))
+        }
+
         function Panel() {
-          const [open, setOpen] = useState(() => {
-            try { return localStorage.getItem(LS_OPEN) === '1' } catch { return false }
-          })
-          const [width, setWidth] = useState(() => {
-            try {
-              const n = Number(localStorage.getItem(LS_WIDTH))
-              return n >= 360 && n <= 960 ? n : 480
-            } catch { return 480 }
-          })
-          const dragRef = useRef(null)
           const [projects, setProjects] = useState([])
           const [gitBranches, setGitBranches] = useState({})
           const [gitPanel, setGitPanel] = useState(null)
@@ -325,7 +338,8 @@ window.__ModuleLoader__.load({
           const [gitKnown, setGitKnown] = useState({})
           const [gitQuery, setGitQuery] = useState('')
           // git 面板里的变更文件清单展开状态（按项目 id 记，切项目互不影响）
-          const [gitShowFiles, setGitShowFiles] = useState(false)
+          // null = 未表态：有变更时自动展开；用户点徽标后固定为显式选择
+          const [gitShowFiles, setGitShowFiles] = useState(null)
           const [excluded, setExcluded] = useState([])
           const [running, setRunning] = useState([])
           const [recent, setRecent] = useState([])
@@ -342,33 +356,6 @@ window.__ModuleLoader__.load({
           const conStateRef = useRef(null)
 
           useEffect(() => { conStateRef.current = con }, [con])
-
-          useEffect(() => {
-            try { localStorage.setItem(LS_OPEN, open ? '1' : '0') } catch { /* 忽略 */ }
-          }, [open])
-
-          // 左缘拖拽调宽：面板 fixed right:20，宽度 = 视口宽 - 20 - 鼠标 x
-          const startDrag = (e) => {
-            e.preventDefault()
-            dragRef.current = { onMove: null }
-            const onMove = (ev) => {
-              const w = Math.min(960, Math.max(360, window.innerWidth - 20 - ev.clientX))
-              setWidth(w)
-            }
-            const onUp = () => {
-              dragRef.current = null
-              document.removeEventListener('mousemove', onMove)
-              document.removeEventListener('mouseup', onUp)
-              document.body.style.userSelect = ''
-              setWidth((w) => {
-                try { localStorage.setItem(LS_WIDTH, String(Math.round(w))) } catch { /* 忽略 */ }
-                return w
-              })
-            }
-            document.body.style.userSelect = 'none'
-            document.addEventListener('mousemove', onMove)
-            document.addEventListener('mouseup', onUp)
-          }
 
           const loadProjects = useCallback(async () => {
             try {
@@ -396,17 +383,17 @@ window.__ModuleLoader__.load({
 
           useEffect(() => { loadProjects() }, [loadProjects])
 
+          // tab 主体只在可见时挂载（未声明 keepMounted），挂载即轮询，卸载即停
           useEffect(() => {
-            if (!open) return undefined
             loadStatus()
             const poll = setInterval(loadStatus, 3000)
             const tick = setInterval(() => setCon((c) => (c ? { ...c } : c)), 1000)
             return () => { clearInterval(poll); clearInterval(tick) }
-          }, [open, loadStatus])
+          }, [loadStatus])
 
           // 控制台增量 tail：只拉新增字节，1.2s 一次
           useEffect(() => {
-            if (!open || !con || !con.runId) return undefined
+            if (!con || !con.runId) return undefined
             const runId = con.runId
             let stopped = false
             const timer = setInterval(async () => {
@@ -770,7 +757,8 @@ window.__ModuleLoader__.load({
             setConfirm(null)
             setCon(null)
             setGitQuery('')
-            setGitShowFiles(false)
+            // 变更文件清单：null = 未表态，随数据自动决定（有变更默认展开）
+            setGitShowFiles(null)
             setGitPanel({ id, loading: true, data: null, error: null })
             try {
               const d = await call(`/git-detail?id=${encodeURIComponent(id)}`)
@@ -778,6 +766,8 @@ window.__ModuleLoader__.load({
               if (d && d.status && d.status.ok) {
                 setGitKnown((k) => ({ ...k, [id]: d.status }))
               }
+              // 有本地变更 → 清单默认展开；用户手动点徽标后（非 null）以后不再自动改
+              setGitShowFiles((v) => (v === null ? Boolean(d && d.status && d.status.ok && d.status.files && d.status.files.length) : v))
             } catch (e) {
               setGitPanel((g) => (g && g.id === id ? { ...g, loading: false, error: e.message } : g))
             }
@@ -864,6 +854,8 @@ window.__ModuleLoader__.load({
             const behind = st && st.ok ? st.behind : known ? known.behind : null
             const curBranch = (st && st.ok && st.branch) || tier0?.branch || t('git.detached')
             const isBusy = busy === `git:${gitPanel.id}`
+            // 变更清单展开态：null=未表态（默认展开），点徽标后为显式 true/false
+            const showFiles = gitShowFiles === null ? true : gitShowFiles
 
             // 分支列表：搜索过滤，当前分支永远置顶；不含"最近分支"区（保持简洁）
             const qBranch = gitQuery.trim().toLowerCase()
@@ -1014,6 +1006,7 @@ window.__ModuleLoader__.load({
                 : null,
 
               // 变更文件徽标行：+新增 ~修改 -删除 →重命名 ?未跟踪 ⚠冲突（数据来自同一条 status，零额外请求）
+              // 清单默认展开（本地有修改直接可见）；点徽标收起/再展开
               st && st.ok && st.files && st.files.length
                 ? h('div', { style: { display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', margin: '4px 0' } },
                     (() => {
@@ -1034,21 +1027,21 @@ window.__ModuleLoader__.load({
                             style: {
                               display: 'inline-flex', padding: '1px 7px', borderRadius: 999, fontSize: 10, fontWeight: 600,
                               border: 'none', cursor: 'pointer',
-                              background: gitShowFiles ? 'var(--dsw-alias-bg-layer-active, rgba(128,128,128,.18))' : 'var(--dsw-alias-bg-layer-2)',
+                              background: showFiles ? 'var(--dsw-alias-bg-layer-active, rgba(128,128,128,.18))' : 'var(--dsw-alias-bg-layer-2)',
                               color,
                             },
                             title: t('git.filesHint'),
-                            onClick: () => setGitShowFiles((v) => !v),
+                            onClick: () => setGitShowFiles(!showFiles),
                           }, text),
                         ),
-                        gitShowFiles
+                        showFiles
                           ? h('span', { key: 'more', style: { ...styles.meta, fontSize: 10 } },
                               `${st.files.length}${st.filesTruncated ? '+' : ''} ${t('git.files')}`)
                           : null,
                       ]
                     })(),
-                    // 变更文件清单（折叠区；每行状态字母 + 路径，冲突置顶）
-                    gitShowFiles
+                    // 变更文件清单（默认展开：本地有修改直接可见；点徽标收起）
+                    showFiles
                       ? h('div', {
                           key: 'files',
                           style: {
@@ -1514,58 +1507,69 @@ window.__ModuleLoader__.load({
             excluded.length ? `${excluded.length} ${t('dropped')}` : null,
           ].filter(Boolean).join(' · ')
 
-          return h('div', { style: styles.layer },
-            open
-              ? h('div', { style: { ...styles.panel, width } },
-                  h('div', { style: styles.resize, onMouseDown: startDrag, title: '拖拽调宽' }),
-                  h('div', { style: styles.header },
-                    h('div', null,
-                      h('div', { style: { fontWeight: 600 } }, t('title')),
-                      h('div', { style: styles.meta }, confirm ? t('confirmHint') : con ? t('console') : counts)),
-                    h('div', { style: { display: 'flex', gap: 6 } },
-                      h('button', {
-                        style: styles.btn,
-                        title: '用系统默认编辑器打开 devctl.config.json',
-                        onClick: async () => {
-                          try {
-                            const r = await post('/open-config', {})
-                            setNotice({ text: `已在编辑器中打开：${r.file}` })
-                          } catch (e) {
-                            setNotice({ error: `打开配置失败: ${e.message}` })
-                          }
-                        },
-                      }, '⚙'),
-                      h('button', {
-                        style: styles.btn,
-                        onClick: () => { setConfirm(null); setCon(null); setGitPanel(null); setGitConfirm(null); loadProjects(); loadStatus() },
-                      }, t('refresh')),
-                      h('button', { style: styles.btn, onClick: () => { setConfirm(null); setCon(null); setGitPanel(null); setGitConfirm(null); setOpen(false) } }, '×'))),
-                  h('div', { style: styles.searchWrap },
-                    h('input', {
-                      style: styles.search, value: query, placeholder: t('search'),
-                      onChange: (e) => setQuery(e.target.value),
-                    })),
-                  h('div', { style: styles.body }, rows),
-                  noticeBar(),
-                  gitPanel ? renderGitPanel() : null,
-                  confirm ? renderConfirm() : null,
-                  con ? renderConsole() : null,
-                  gitConfirm ? renderGitConfirm() : null)
-              : null,
-            h('button', {
-              style: styles.fab,
-              onClick: () => {
-                const next = !open
-                setOpen(next)
-                if (next) { loadProjects(); loadStatus() }
-              },
-              title: t('subtitle'),
-            }, '▦ ', t('title'), runInstances.length || buildInstances.length ? ` · ${runInstances.length + buildInstances.length}` : '')
-          )
+          // tab 主体：占满右侧边栏 pane（宽高/折叠/浮动由宿主管），
+          // position:relative 让内部 inset:0 的 git/确认/控制台覆盖层有正确定位基准
+          return h('div', {
+            style: {
+              ...styles.panel,
+              position: 'relative', width: '100%', height: '100%',
+              maxWidth: 'none', maxHeight: 'none', borderRadius: 0,
+              border: 'none', boxShadow: 'none', right: 'auto', bottom: 'auto',
+            },
+          },
+            h('div', { style: styles.header },
+              h('div', null,
+                h('div', { style: { fontWeight: 600 } }, t('title')),
+                h('div', { style: styles.meta }, confirm ? t('confirmHint') : con ? t('console') : counts)),
+              h('div', { style: { display: 'flex', gap: 6 } },
+                h('button', {
+                  style: styles.btn,
+                  title: '用系统默认编辑器打开 devctl.config.json',
+                  onClick: async () => {
+                    try {
+                      const r = await post('/open-config', {})
+                      setNotice({ text: `已在编辑器中打开：${r.file}` })
+                    } catch (e) {
+                      setNotice({ error: `打开配置失败: ${e.message}` })
+                    }
+                  },
+                }, '⚙'),
+                h('button', {
+                  style: styles.btn,
+                  onClick: () => { setConfirm(null); setCon(null); setGitPanel(null); setGitConfirm(null); loadProjects(); loadStatus() },
+                }, t('refresh')))),
+            h('div', { style: styles.searchWrap },
+              h('input', {
+                style: styles.search, value: query, placeholder: t('search'),
+                onChange: (e) => setQuery(e.target.value),
+              })),
+            h('div', { style: styles.body }, rows),
+            noticeBar(),
+            gitPanel ? renderGitPanel() : null,
+            confirm ? renderConfirm() : null,
+            con ? renderConsole() : null,
+            gitConfirm ? renderGitConfirm() : null)
         }
 
         ctx.slots.inject('shell.overlay', () =>
-          ctx.slots.register({ name: 'shell.overlay', id: 'devctl.panel', order: 60 }, Panel)
+          ctx.slots.register({ name: 'shell.overlay', id: 'devctl.fab', order: 60 }, DevctlFab)
+        )
+
+        // 右侧边栏集成（与内置终端面板同款两段式注册）：
+        //   ① sidebarRightTabs 注册页面类型（kind 'devctl'，guide 卡片出现在
+        //      右侧边栏引导页，点卡片即开面板 tab）
+        //   ② sidebar.right.pane.tab 以类型 id 为 key 注册 tab 主体 = Panel
+        // tab 默认不 keepMounted：隐藏即卸载，/status 3s 轮询与日志 tail 随之停止
+        const TYPE_ID = 'dsh-devctl-panel/projects'
+        ctx.sidebarRightTabs.register({
+          id: TYPE_ID,
+          kind: 'devctl',
+          priority: 'extension',
+          title: () => t('title'),
+          guide: [{ id: 'projects', order: 40, title: () => t('title'), description: () => t('subtitle') }],
+        })
+        ctx.slots.inject('sidebar.right.pane.tab', () =>
+          ctx.slots.register({ name: 'sidebar.right.pane.tab', key: TYPE_ID }, Panel)
         )
       },
     }
