@@ -397,6 +397,14 @@ window.__ModuleLoader__.load({
 
         function Panel() {
           const [projects, setProjects] = useState([])
+          // tab 根节点引用：keepMounted 后隐藏靠 display:none，轮询前用它判可见性
+          const rootRef = useRef(null)
+          const isVisible = () => {
+            const el = rootRef.current
+            if (!el) return false
+            if (typeof el.checkVisibility === 'function') return el.checkVisibility()
+            return Boolean(el.offsetParent) || el.getClientRects().length > 0
+          }
           const [gitBranches, setGitBranches] = useState({})
           const [gitPanel, setGitPanel] = useState(null)
           const [gitConfirm, setGitConfirm] = useState(null)
@@ -459,15 +467,17 @@ window.__ModuleLoader__.load({
 
           useEffect(() => { loadProjects() }, [loadProjects])
 
-          // tab 主体只在可见时挂载（未声明 keepMounted），挂载即轮询，卸载即停
+          // tab 主体只在可见时轮询：keepMounted 后切走 tab 仍挂载（状态保留），
+          // 但 display:none 下这些 interval 全部空转跳过，回来最多 3s 恢复
           useEffect(() => {
             loadStatus()
-            const poll = setInterval(loadStatus, 3000)
-            const tick = setInterval(() => setCon((c) => (c ? { ...c } : c)), 1000)
+            const poll = setInterval(() => { if (isVisible()) loadStatus() }, 3000)
+            const tick = setInterval(() => { if (isVisible()) setCon((c) => (c ? { ...c } : c)) }, 1000)
             return () => { clearInterval(poll); clearInterval(tick) }
+            // eslint-disable-next-line react-hooks/exhaustive-deps
           }, [loadStatus])
 
-          // 控制台增量 tail：只拉新增字节，1.2s 一次
+          // 控制台增量 tail：只拉新增字节，1.2s 一次；tab 隐藏期间暂停，回来按 offset 补齐
           useEffect(() => {
             if (!con || !con.runId) return undefined
             const runId = con.runId
@@ -475,6 +485,7 @@ window.__ModuleLoader__.load({
             const timer = setInterval(async () => {
               const cur = conStateRef.current
               if (stopped || !cur || cur.runId !== runId) return
+              if (!isVisible()) return
               try {
                 const d = await call(
                   `/logs?runId=${encodeURIComponent(runId)}&offset=${cur.offset ?? 0}`
@@ -926,6 +937,15 @@ window.__ModuleLoader__.load({
               : h('div', { key: k, style: styles.kvRow },
                   h('span', { style: styles.kvKey }, k),
                   h('span', { style: styles.kvVal }, String(v)))
+
+          // 抽屉 + 遮罩：压暗底层、点击关闭、阻断抽屉下方交互
+          //（否则提交弹窗开着还能点到暂存区的 −，状态会和弹窗内计数打架）
+          const drawerWith = (onClose, drawer) => h(React.Fragment, null,
+            h('div', {
+              style: { position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.28)', zIndex: 15 },
+              onClick: onClose,
+            }),
+            drawer)
 
           // 面包屑：parts = [{label, onClick?}]；有 onClick 的是可返回的父级
           const crumbs = (parts) =>
@@ -1551,7 +1571,7 @@ window.__ModuleLoader__.load({
             // 起草层随时反映当前待提交区（用户可能回列表继续勾选）
             const sd = gitPanel && gitPanel.id === d.id ? gitPanel.data : null
             const staged = sd && sd.status && sd.status.ok ? sd.status.files.filter((f) => f.staged) : []
-            return h('div', { style: styles.drawer },
+            return drawerWith(() => setGitCommitDraft(null), h('div', { style: styles.drawer },
               crumbs([
                 { label: t('nav.projects'), onClick: () => setGitCommitDraft(null) },
                 { label: `${d.id} · ${t('git')}` },
@@ -1582,7 +1602,7 @@ window.__ModuleLoader__.load({
                     setGitCommitDraft(null)
                     requestGitAction('commit', d.id, undefined, undefined, m)
                   },
-                }, t('git.commit'))))
+                }, t('git.commit')))))
           }
 
           // 在右侧边栏打开完整文件（复用 DSH 内置 text 预览 tab）：
@@ -1623,7 +1643,7 @@ window.__ModuleLoader__.load({
                 h('span', { style: { width: '1ch', flexShrink: 0, color: 'var(--dsw-alias-label-secondary)', opacity: 0.6 } }, mark),
                 h('span', { style: { flex: 1, minWidth: 0, overflowX: 'auto', color } }, l))
             }
-            return h('div', { style: styles.drawer },
+            return drawerWith(() => setGitDiff(null), h('div', { style: styles.drawer },
               h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 } },
                 h('div', { style: { flex: 1, minWidth: 0 } },
                   crumbs([
@@ -1676,13 +1696,13 @@ window.__ModuleLoader__.load({
                         (g.truncated || all.length > 2000)
                           ? h('div', { style: { ...styles.meta, padding: '4px 8px' } }, t('git.filesTruncated'))
                           : null)
-                    : h('div', { style: { ...styles.meta, padding: '12px 0' } }, t('git.diffEmpty')))
+                    : h('div', { style: { ...styles.meta, padding: '12px 0' } }, t('git.diffEmpty'))))
           }
 
           const renderGitConfirm = () => {
             const isDelete = gitConfirm.op === 'delete'
             const isDanger = isDelete || gitConfirm.op === 'merge-abort'
-            return h('div', { style: styles.drawer },
+            return drawerWith(() => setGitConfirm(null), h('div', { style: styles.drawer },
               h('div', { style: { ...styles.confirmTitle, ...(isDanger ? { color: 'var(--dsw-alias-state-error-primary)' } : {}) } },
                 t(`git.confirm.${gitConfirm.op}`)),
               h('div', { ...styles.meta, marginBottom: 8 }, t('confirmHint')),
@@ -1718,13 +1738,13 @@ window.__ModuleLoader__.load({
                     ? { ...styles.btn, ...styles.btnStop }
                     : { ...styles.btn, ...styles.btnRun },
                   onClick: () => executeGitAction(false),
-                }, t('execute'))))
+                }, t('execute')))))
           }
 
           const renderConfirm = () => {
             const { mode, project, task, plan, loading: planLoading, error: planError } = confirm
             const isRelease = task.section === 'release'
-            return h('div', { style: styles.drawer },
+            return drawerWith(() => setConfirm(null), h('div', { style: styles.drawer },
               h('div', { style: styles.confirmTitle },
                 isRelease ? t('confirmRelease') : mode === 'run' ? t('confirmRun') : t('confirmBuild')),
               h('div', {
@@ -1784,7 +1804,7 @@ window.__ModuleLoader__.load({
                 : null,
               h('div', { style: styles.actions },
                 h('button', { style: styles.btn, onClick: () => setConfirm(null) }, t('cancel')),
-                h('button', { style: { ...styles.btn, ...styles.btnRun }, disabled: planLoading || !plan, onClick: executeConfirmed }, t('execute')))
+                h('button', { style: { ...styles.btn, ...styles.btnRun }, disabled: planLoading || !plan, onClick: executeConfirmed }, t('execute'))))
             )
           }
 
@@ -2096,6 +2116,7 @@ window.__ModuleLoader__.load({
           // tab 主体：占满右侧边栏 pane（宽高/折叠/浮动由宿主管），
           // position:relative 让内部 inset:0 的 git/确认/控制台覆盖层有正确定位基准
           return h('div', {
+            ref: rootRef,
             style: {
               ...styles.panel,
               position: 'relative', width: '100%', height: '100%',
@@ -2153,6 +2174,9 @@ window.__ModuleLoader__.load({
           id: TYPE_ID,
           kind: 'devctl',
           priority: 'extension',
+          // keepMounted：切走 tab 保持挂载（git 面板/控制台状态不丢）；
+          // 隐藏期间的轮询由 Panel 内的可见性门控拦下，不会后台空转
+          keepMounted: true,
           title: () => t('title'),
           guide: [{ id: 'projects', order: 40, title: () => t('title'), description: () => t('subtitle') }],
         })
