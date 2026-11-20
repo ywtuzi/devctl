@@ -635,11 +635,30 @@ export function apply(ctx, config) {
         const body = await readBody(req)
         const { id, op } = body
         if (!id || !op) return send(res, 400, { error: '缺少 id 或 op' })
-        if (!['fetch', 'pull', 'switch', 'update', 'delete', 'merge', 'merge-abort'].includes(op)) {
+        if (!['fetch', 'pull', 'switch', 'update', 'delete', 'merge', 'merge-abort', 'commit', 'push', 'stage', 'unstage'].includes(op)) {
           return send(res, 400, { error: `不支持的操作: ${op}` })
         }
         if ((op === 'switch' || op === 'update' || op === 'delete' || op === 'merge') && !body.branch) {
           return send(res, 400, { error: `${op} 需要 branch` })
+        }
+        // stage/unstage：路径数组（index 操作，可逆、不写历史 → 免预演确认直接执行）
+        let paths = null
+        if (op === 'stage' || op === 'unstage') {
+          paths = Array.isArray(body.paths) ? body.paths : []
+          if (!paths.length) return send(res, 400, { error: `${op} 需要 paths（至少一个文件）` })
+          if (paths.length > 500) return send(res, 400, { error: '单次最多 500 个文件' })
+          for (const p of paths) {
+            if (typeof p !== 'string' || !p || p.length > 1024 || p.includes('\0') || /^[A-Za-z]:[\\/]/.test(p) || p.startsWith('/')) {
+              return send(res, 400, { error: `非法路径: ${String(p).slice(0, 80)}` })
+            }
+          }
+        }
+        // commit：信息必填、去空白、限长；只拦明显滥用，内容一概透传
+        let msg = null
+        if (op === 'commit') {
+          msg = String(body.msg || '').trim()
+          if (!msg) return send(res, 400, { error: 'commit 需要 msg（提交信息）' })
+          if (msg.length > 500) return send(res, 400, { error: '提交信息过长（上限 500 字符）' })
         }
         if (body.branch && !/^[A-Za-z0-9_./-]+$/.test(body.branch)) {
           return send(res, 400, { error: '非法 branch' })
@@ -650,6 +669,9 @@ export function apply(ctx, config) {
           return send(res, 400, { error: '非法 remote' })
         }
         if (body.preview) {
+          if (op === 'stage' || op === 'unstage') {
+            return send(res, 400, { error: `${op} 无需预演` })
+          }
           const { gitMod } = await loadMods(cli)
           const force = op === 'delete' && body.force === true
           const cmd =
@@ -657,7 +679,9 @@ export function apply(ctx, config) {
               ? gitMod.gitCommandPreview.update(body.branch, body.remote || 'origin')
               : op === 'delete'
                 ? gitMod.gitCommandPreview.delete(body.branch, force)
-                : gitMod.gitCommandPreview[op](body.branch)
+                : op === 'commit'
+                  ? gitMod.gitCommandPreview.commit(msg)
+                  : gitMod.gitCommandPreview[op](body.branch)
           const warn =
             op === 'delete'
               ? force
@@ -665,16 +689,35 @@ export function apply(ctx, config) {
                 : '只删除已合并分支；未合并分支会被拒绝（防止丢提交）'
               : op === 'merge'
                 ? '把该分支合并进当前分支；如产生冲突，文件会标记为未合并状态（面板会出现「放弃合并」按钮）'
-                : op === 'merge-abort'
-                  ? '放弃进行中的合并，工作区与暂存区回到合并前状态'
-                  : null
+              : op === 'merge-abort'
+                ? '放弃进行中的合并，工作区与暂存区回到合并前状态'
+              : op === 'commit'
+                ? '提交待提交区（已暂存）的变更；未暂存的改动保留在工作区'
+              : op === 'push'
+                ? '把本地提交推送到远端（无 upstream 时自动 push -u origin 当前分支）'
+                : null
           return send(res, 200, {
             id, op, cmd, warn,
             cwd: (await getScan(root, cli)).projects.find((p) => p.id === id)?.absPath || null,
           })
         }
+        // stage/unstage 直执行（index 操作，可逆）；其余走 CLI 预演-确认流
+        if (op === 'stage' || op === 'unstage') {
+          const { projects } = await getScan(root, cli)
+          const project = projects.find((p) => p.id === id)
+          if (!project) return send(res, 404, { error: `项目不存在: ${id}` })
+          const { gitMod } = await loadMods(cli)
+          const r = op === 'stage'
+            ? await gitMod.gitStage(project.absPath, paths)
+            : await gitMod.gitUnstage(project.absPath, paths)
+          gitDetailCache = null
+          if (!r.ok) return send(res, 200, { ok: false, error: r.err || `${op} 失败` })
+          return send(res, 200, { ok: true, staged: paths.length })
+        }
         const args = ['git', op, id]
         if (op === 'switch' || op === 'update' || op === 'delete' || op === 'merge') args.push(body.branch)
+        // commit 信息走 --msg（argv 直传，不经 shell，无注入面）
+        if (op === 'commit') args.push('--msg', msg)
         // force 只对 delete 生效（-D），其余操作忽略，避免误传导致命令语义漂移
         if (op === 'delete' && body.force === true) args.push('--force')
         args.push('--json')

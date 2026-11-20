@@ -38,6 +38,12 @@ ok('conflicts count', r.conflicts === 3 && r.fileCounts.conflict === 3)
 ok('fileCounts sums', r.fileCounts.added === 1 && r.fileCounts.deleted === 1 && r.fileCounts.renamed === 1 && r.fileCounts.untracked === 1)
 ok('clean repo no files', parseStatusSb('## main\n').files.length === 0)
 
+// 暂存区双侧条目：MM 文件在 待提交/变更 两区各一条
+r = parseStatusSb('## main\nMM both.js\nA  new.js\n M wk.js\n')
+const mm = r.files.filter((f) => f.path === 'both.js')
+ok('dual entry for MM', mm.length === 2 && mm.some((f) => f.staged && f.state === 'modified') && mm.some((f) => !f.staged && f.state === 'modified'))
+ok('staged flag', r.files.find((f) => f.path === 'new.js')?.staged === true && r.files.find((f) => f.path === 'wk.js')?.staged === false)
+
 // 截断：MAX_FILES 之上不再收集，但计数继续
 {
   const many = ['## main'].concat(Array.from({ length: 400 }, (_, i) => `M  f${i}.js`)).join('\n')

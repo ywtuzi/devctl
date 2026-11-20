@@ -173,6 +173,10 @@ export function parseStatusSb(out) {
   const files = []
   const counts = { added: 0, deleted: 0, modified: 0, renamed: 0, copied: 0, conflict: 0, untracked: 0 }
   let filesTruncated = false
+  const push = (path, orig, state, staged) => {
+    if (files.length < MAX_FILES) files.push({ path, orig, state, staged })
+    else filesTruncated = true
+  }
   for (const l of lines.slice(1)) {
     if (!l) continue
     const x = l[0]
@@ -180,25 +184,28 @@ export function parseStatusSb(out) {
     if (x === '?') {
       untracked++
       counts.untracked++
-    } else if (x !== ' ' && x !== '#') staged++
+      push(unquotePath(l.slice(3)), null, 'untracked', false)
+      continue
+    }
+    if (x !== ' ' && x !== '#') staged++
     else if (y !== ' ' && y !== '#') modified++
     // 计数始终统计（截断只影响清单展示，不影响徽标数字）
-    const state0 = x === '?' ? 'untracked' : fileState(x, y)
-    if (x !== '?') counts[state0]++
-    if (files.length < MAX_FILES) {
-      const raw = l.slice(3)
-      // 重命名/复制："old -> new"，展示新路径、旧路径放进原名
-      let path = unquotePath(raw)
-      let orig = null
-      const rm = path.match(/^(.*) -> (.*)$/)
-      if (rm && (x === 'R' || x === 'C' || y === 'R' || y === 'C')) {
-        orig = rm[1]
-        path = rm[2]
-      }
-      files.push({ path, orig, state: state0, staged: x !== '?' && x !== ' ' })
-    } else {
-      filesTruncated = true
+    counts[fileState(x, y)]++
+    const raw = unquotePath(l.slice(3))
+    // 重命名/复制："old -> new"，展示新路径、旧路径放进原名
+    let path = raw
+    let orig = null
+    const rm = path.match(/^(.*) -> (.*)$/)
+    if (rm && (x === 'R' || x === 'C' || y === 'R' || y === 'C')) {
+      orig = rm[1]
+      path = rm[2]
     }
+    // 双侧条目：一个文件可同时有已暂存与未暂存的改动（如 MM），
+    // 暂存区 UI 需要它在两个区各出现一次。冲突（UU/AA/DD/AU…）是
+    // 「对」级别的状态，拆侧前先判定，两侧都标 conflict
+    const isConflict = fileState(x, y) === 'conflict'
+    if (x !== ' ') push(path, orig, isConflict ? 'conflict' : fileState(x, ' '), true)
+    if (y !== ' ') push(path, orig, isConflict ? 'conflict' : fileState(' ', y), false)
   }
   return {
     ok: true,
@@ -353,9 +360,50 @@ export async function gitMerge(absPath, branch) {
   return git(absPath, ['merge', '--no-edit', branch], 300000)
 }
 
-/** 放弃进行中的合并：工作区与 index 回到 MERGE_HEAD 之前的状态 */
+/**
+ * 放弃进行中的合并：工作区与 index 回到 MERGE_HEAD 之前的状态
+ */
 export async function gitMergeAbort(absPath) {
   return git(absPath, ['merge', '--abort'], 60000)
+}
+
+/**
+ * 暂存指定文件（git add -- <paths>）。冲突文件 add 即标记为已解决。
+ * paths 经 argv 直传，不做 shell 拼接。
+ */
+export async function gitStage(absPath, paths) {
+  return git(absPath, ['add', '--', ...paths], 60000)
+}
+
+/** 取消暂存（git reset -q HEAD -- <paths>）：只动 index，不动工作区内容 */
+export async function gitUnstage(absPath, paths) {
+  return git(absPath, ['reset', '-q', 'HEAD', '--', ...paths], 60000)
+}
+
+/**
+ * 提交暂存区（git commit -m）。面板流程：用户先勾选文件进待提交区，再提交；
+ * all=true 时先 git add -A（CLI 便捷参数，面板不用）。
+ */
+export async function gitCommit(absPath, message, { all = false } = {}) {
+  if (all) {
+    const add = await git(absPath, ['add', '-A'], 60000)
+    if (!add.ok) return add
+  }
+  return git(absPath, ['commit', '-m', message], 60000)
+}
+
+/**
+ * 推送到 upstream。无 upstream（从未推送的分支）时退回
+ * git push -u origin <当前分支>，让 git 自己建跟踪关系。
+ */
+export async function gitPush(absPath) {
+  const first = await git(absPath, ['push'], 300000)
+  if (first.ok) return first
+  // 无 upstream 的报错特征；其他失败（网络/权限/非 ff）原样返回
+  if (!/has no upstream|no upstream branch|The current branch .* has no upstream/i.test(first.err)) return first
+  const b = readBranchFast(absPath)
+  if (!b || !b.branch) return first
+  return git(absPath, ['push', '-u', 'origin', b.branch], 300000)
 }
 
 /** 预演用：各操作实际会执行的命令行（展示给用户确认的就是真正执行的） */
@@ -367,6 +415,10 @@ export const gitCommandPreview = {
   delete: (branch, force = false) => `git branch -${force ? 'D' : 'd'} ${branch}`,
   merge: (branch) => `git merge --no-edit ${branch}`,
   'merge-abort': () => 'git merge --abort',
+  commit: (message) => `git commit -m "${message}"`,
+  'stage': (paths) => `git add -- ${paths.join(' ')}`,
+  'unstage': (paths) => `git reset -q HEAD -- ${paths.join(' ')}`,
+  push: () => 'git push',
 }
 
 /* ------------------------------ 并发限流 ------------------------------ */

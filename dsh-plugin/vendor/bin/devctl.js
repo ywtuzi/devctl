@@ -37,6 +37,9 @@ function parseArgs(argv) {
     else if (a.startsWith('--module=')) opts.module = a.slice(9)
     else if (a.startsWith('--profile=')) opts.profile = a.slice(10)
     else if (a.startsWith('--lines=')) opts.lines = Number(a.slice(8))
+    else if (a === '--all') opts.all = true
+    else if (a === '--msg') opts.msg = argv[++i]
+    else if (a.startsWith('--msg=')) opts.msg = a.slice(6)
     else if (!a.startsWith('-')) opts._.push(a)
   }
   return opts
@@ -521,7 +524,7 @@ async function cmdGit(opts, ctx) {
   const sub = opts._[1]
   const id = opts._[2]
   const arg = opts._[3]
-  const { readBranchFast, gitStatusDetail, gitBranches, gitFetch, gitPull, gitSwitch, gitUpdateBranch, gitDeleteBranch, gitMerge, gitMergeAbort, parseFetchDeleted, mapLimit } = await import('../src/git.js')
+  const { readBranchFast, gitStatusDetail, gitBranches, gitFetch, gitPull, gitSwitch, gitUpdateBranch, gitDeleteBranch, gitMerge, gitMergeAbort, gitCommit, gitPush, gitStage, gitUnstage, parseFetchDeleted, mapLimit } = await import('../src/git.js')
 
   if (sub === 'status') {
     // devctl git status [--json]：全部项目的分支速览（零 spawn 直读）
@@ -539,7 +542,7 @@ async function cmdGit(opts, ctx) {
     return
   }
 
-  if (!id) fail('用法: devctl git <status|branches|files|fetch|pull|switch|update|delete|merge|abort> <项目ID> [分支名]')
+  if (!id) fail('用法: devctl git <status|branches|files|fetch|pull|switch|update|delete|merge|abort|commit|push> <项目ID> [分支名]')
   const projects = scan(ctx.root, ctx.config)
   const project = requireProject(projects, id)
 
@@ -642,7 +645,40 @@ async function cmdGit(opts, ctx) {
     return
   }
 
-  fail(`未知 git 子命令: ${sub}\n  可用: status / branches / files / fetch / pull / switch / update / delete / merge / abort`)
+  if (sub === 'stage' || sub === 'unstage') {
+    // 暂存/取消暂存：opts._.slice(3) 是路径列表
+    const paths = opts._.slice(3).filter(Boolean)
+    if (!paths.length) fail(`用法: devctl git ${sub} <项目ID> <路径...>`)
+    const r = sub === 'stage' ? await gitStage(project.absPath, paths) : await gitUnstage(project.absPath, paths)
+    if (opts.json) return console.log(JSON.stringify({ ok: r.ok, out: r.out.trim(), error: r.err }))
+    if (!r.ok) fail(r.err || `${sub} 失败`)
+    console.log(`${c.green('✓')} ${project.id} · 已${sub === 'stage' ? '暂存' : '取消暂存'} ${paths.length} 个文件`)
+    return
+  }
+
+  if (sub === 'commit') {
+    // 提交暂存区。--msg 必填：面板/终端都不做无信息提交。
+    // --all 先 git add -A（终端便捷用；面板走 stage 逐文件勾选）
+    const msg = String(opts.msg || '').trim()
+    if (!msg) fail('用法: devctl git commit <项目ID> --msg "提交信息" [--all]')
+    if (msg.length > 500) fail('提交信息过长（上限 500 字符）')
+    const r = await gitCommit(project.absPath, msg, { all: Boolean(opts.all) })
+    if (opts.json) return console.log(JSON.stringify({ ok: r.ok, out: r.out.trim(), error: r.err }))
+    if (!r.ok) fail(r.err || 'commit 失败')
+    console.log(`${c.green('✓')} ${project.id} · 已提交：${r.out.trim().split('\n')[0]}`)
+    return
+  }
+
+  if (sub === 'push') {
+    // 推送到 upstream；无 upstream 时 -u origin <当前分支>
+    const r = await gitPush(project.absPath)
+    if (opts.json) return console.log(JSON.stringify({ ok: r.ok, out: r.out.trim(), error: r.err }))
+    if (!r.ok) fail(r.err || 'push 失败')
+    console.log(r.out.trim().split('\n').filter(Boolean).pop() || `${c.green('✓')} ${project.id} · push 完成`)
+    return
+  }
+
+  fail(`未知 git 子命令: ${sub}\n  可用: status / branches / files / fetch / pull / switch / update / delete / merge / abort / stage / unstage / commit / push`)
 }
 
 function cmdDoctor(opts, ctx) {  const cfg = ctx.config

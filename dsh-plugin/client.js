@@ -190,6 +190,22 @@ window.__ModuleLoader__.load({
           'git.f.copied': '复制',
           'git.f.conflict': '冲突',
           'git.f.untracked': '未跟踪',
+          'git.commit': '提交',
+          'git.commitTitle': '提交本地变更',
+          'git.commitMsgPh': '提交信息（必填，≤500 字符）…',
+          'git.commitNudge': '先把文件加入待提交区（点变更区的 +）',
+          'git.confirm.commit': '确认提交？',
+          'git.commitMsgLabel': '提交信息',
+          'git.staged': '待提交',
+          'git.unstaged': '变更',
+          'git.stageAll': '全部暂存',
+          'git.unstageAll': '全部取消',
+          'git.stageTip': '加入待提交区（git add）',
+          'git.unstageTip': '移出待提交区（git reset HEAD，不动文件内容）',
+          'git.stageConflictTip': '标记冲突已解决并加入待提交区（git add）',
+          'git.push': '推送',
+          'git.pushTip': '推送到远端（无 upstream 时自动 -u origin 当前分支）',
+          'git.confirm.push': '确认推送？',
         })
         ctx.locale.register('devctl', 'en', {
           title: 'Project runner', subtitle: 'Status panel · confirm before run',
@@ -301,6 +317,22 @@ window.__ModuleLoader__.load({
           'git.f.copied': 'copied',
           'git.f.conflict': 'conflict',
           'git.f.untracked': 'untracked',
+          'git.commit': 'Commit',
+          'git.commitTitle': 'Commit local changes',
+          'git.commitMsgPh': 'Commit message (required, ≤500 chars)…',
+          'git.commitNudge': 'stage files first (click + in Changes)',
+          'git.confirm.commit': 'Commit these changes?',
+          'git.commitMsgLabel': 'Message',
+          'git.staged': 'Staged',
+          'git.unstaged': 'Changes',
+          'git.stageAll': 'Stage all',
+          'git.unstageAll': 'Unstage all',
+          'git.stageTip': 'stage this file (git add)',
+          'git.unstageTip': 'unstage (git reset HEAD; file content untouched)',
+          'git.stageConflictTip': 'mark conflict resolved and stage (git add)',
+          'git.push': 'Push',
+          'git.pushTip': 'push to remote (-u origin <branch> when no upstream)',
+          'git.confirm.push': 'Push to remote?',
         })
         const t = ctx.locale.bind('devctl')
 
@@ -340,6 +372,10 @@ window.__ModuleLoader__.load({
           // git 面板里的变更文件清单展开状态（按项目 id 记，切项目互不影响）
           // null = 未表态：有变更时自动展开；用户点徽标后固定为显式选择
           const [gitShowFiles, setGitShowFiles] = useState(null)
+          // commit 起草层：{ id, msg } —— 提交信息必须用户显式输入，面板不做任何自动提交
+          const [gitCommitDraft, setGitCommitDraft] = useState(null)
+          // 文件树目录折叠状态（Set<目录全路径>）
+          const [gitCollapsedDirs, setGitCollapsedDirs] = useState(() => new Set())
           const [excluded, setExcluded] = useState([])
           const [running, setRunning] = useState([])
           const [recent, setRecent] = useState([])
@@ -757,6 +793,7 @@ window.__ModuleLoader__.load({
             setConfirm(null)
             setCon(null)
             setGitQuery('')
+            setGitCommitDraft(null)
             // 变更文件清单：null = 未表态，随数据自动决定（有变更默认展开）
             setGitShowFiles(null)
             setGitPanel({ id, loading: true, data: null, error: null })
@@ -777,12 +814,12 @@ window.__ModuleLoader__.load({
           // op 'update' 时 remote 由分支 upstream 推出（面板已有数据，服务端预演零 spawn）
           const remoteOf = (b) => (b && b.upstream ? b.upstream.split('/')[0] : 'origin')
 
-          const requestGitAction = async (op, id, branch, remote) => {
+          const requestGitAction = async (op, id, branch, remote, msg) => {
             // 立即给出点击反馈：git 面板进入 busy，避免"没有反应"的观感
             setGitPanel((g) => (g && g.id === id ? { ...g, cmdBusy: op } : g))
             try {
-              const pv = await post('/git-action', { id, op, branch, remote, preview: true })
-              setGitConfirm({ op, id, branch: branch || null, cmd: pv.cmd, cwd: pv.cwd, warn: pv.warn || null, error: null })
+              const pv = await post('/git-action', { id, op, branch, remote, msg, preview: true })
+              setGitConfirm({ op, id, branch: branch || null, cmd: pv.cmd, cwd: pv.cwd, warn: pv.warn || null, msg: msg || null, error: null })
             } catch (e) {
               console.error('[devctl] git preview failed:', e)
               const msg = `git ${op}: ${e.message}`
@@ -803,6 +840,7 @@ window.__ModuleLoader__.load({
               const r = await post('/git-action', {
                 id: cur.id, op: cur.op, branch: cur.branch || undefined,
                 force: force === true ? true : undefined,
+                msg: cur.msg || undefined,
               })
               if (r.ok === false) {
                 // 失败原因在 r.error（r.out 失败时为空）。必须同时写进 git 面板：
@@ -813,7 +851,9 @@ window.__ModuleLoader__.load({
                   ? '（未合并分支受保护；确认放弃该分支请到终端执行 git branch -D）'
                   : cur.op === 'merge'
                     ? '（多为冲突：解决冲突后提交，或点「放弃合并」回到合并前）'
-                    : ''
+                    : cur.op === 'commit'
+                      ? '（待提交区没有内容？先把文件加入待提交区；或信息为空）'
+                      : ''
                 const msg = `git ${cur.op} 失败: ${reason}${hint}`
                 setNotice({ error: msg })
                 setGitPanel((g) => (g && g.id === cur.id ? { ...g, error: msg } : g))
@@ -843,6 +883,27 @@ window.__ModuleLoader__.load({
             }
           }
 
+          // 暂存/取消暂存：index 操作、可逆、不写历史 → 免确认直接执行，
+          // 完成后刷新 git 详情（一次 spawn，用户显式动作才发生）
+          const stageAction = async (op, paths) => {
+            setGitPanel((g) => (g ? { ...g, cmdBusy: op } : g))
+            try {
+              const r = await post('/git-action', { id: gitPanel.id, op, paths })
+              if (r.ok === false) {
+                const msg = `git ${op} 失败: ${String(r.error || '').split('\n')[0].slice(0, 160)}`
+                setNotice({ error: msg })
+                setGitPanel((g) => (g ? { ...g, error: msg, cmdBusy: null } : g))
+                return
+              }
+              setGitPanel((g) => (g ? { ...g, cmdBusy: null } : g))
+              await openGitPanel(gitPanel.id)
+            } catch (e) {
+              const msg = `git ${op} 失败: ${e.message}`
+              setNotice({ error: msg })
+              setGitPanel((g) => (g ? { ...g, error: msg, cmdBusy: null } : g))
+            }
+          }
+
           const renderGitPanel = () => {
             const d = gitPanel.data
             const st = d && d.status
@@ -856,6 +917,103 @@ window.__ModuleLoader__.load({
             const isBusy = busy === `git:${gitPanel.id}`
             // 变更清单展开态：null=未表态（默认展开），点徽标后为显式 true/false
             const showFiles = gitShowFiles === null ? true : gitShowFiles
+            const allFiles = st && st.ok && st.files ? st.files : []
+            const stagedFiles = allFiles.filter((f) => f.staged)
+            const unstagedFiles = allFiles.filter((f) => !f.staged)
+            const fileMark = { added: '+', deleted: '-', modified: '~', renamed: '→', copied: '⧉', conflict: '⚠', untracked: '?' }
+            const fileColor = {
+              added: 'var(--dsw-alias-state-success-primary)',
+              deleted: 'var(--dsw-alias-state-error-primary)',
+              modified: 'var(--dsw-alias-state-warn-primary)',
+              conflict: 'var(--dsw-alias-state-error-primary)',
+            }
+
+            // 目录树：files → { dirs: Map<seg,node>, files: [] }，node 带计数
+            const buildTree = (files) => {
+              const root = { dirs: new Map(), files: [] }
+              for (const f of files) {
+                const parts = f.path.split('/')
+                let node = root
+                for (let i = 0; i < parts.length - 1; i++) {
+                  const seg = parts[i]
+                  let next = node.dirs.get(seg)
+                  if (!next) { next = { name: seg, dirs: new Map(), files: [] }; node.dirs.set(seg, next) }
+                  node = next
+                }
+                node.files.push(f)
+              }
+              return root
+            }
+            const countTree = (node) => node.files.length + [...node.dirs.values()].reduce((s, d) => s + countTree(d), 0)
+
+            // 树 → 行数组（目录行可折叠；文件行带 暂存/取消暂存 按钮）
+            const treeRows = (node, dirPath, depth, side) => {
+              const rows = []
+              for (const d of [...node.dirs.values()].sort((a, b) => a.name.localeCompare(b.name))) {
+                const key = dirPath ? `${dirPath}/${d.name}` : d.name
+                const collapsed = gitCollapsedDirs.has(key)
+                rows.push(h('div', {
+                  key: `d-${key}`,
+                  style: { display: 'flex', alignItems: 'center', gap: 4, padding: '1px 0 1px ' + (depth * 12) + 'px', fontSize: 11, cursor: 'pointer', userSelect: 'none' },
+                  onClick: () => setGitCollapsedDirs((s) => {
+                    const n = new Set(s)
+                    if (n.has(key)) n.delete(key); else n.add(key)
+                    return n
+                  }),
+                },
+                  h('span', { style: { width: '1em', flexShrink: 0, color: 'var(--dsw-alias-label-secondary)' } }, collapsed ? '▸' : '▾'),
+                  h('span', { style: { color: 'var(--dsw-alias-label-secondary)', fontWeight: 600 } }, `${d.name}/`),
+                  h('span', { style: { ...styles.meta, fontSize: 10 } }, String(countTree(d)))))
+                if (!collapsed) rows.push(...treeRows(d, key, depth + 1, side))
+              }
+              for (const f of node.files.slice().sort((a, b) => a.path.localeCompare(b.path))) {
+                const name = f.path.split('/').pop()
+                const color = fileColor[f.state] || 'var(--dsw-alias-label-secondary)'
+                rows.push(h('div', {
+                  key: `f-${side}-${f.path}-${f.state}`,
+                  title: f.orig ? `${f.orig} -> ${f.path}` : f.path,
+                  style: { display: 'flex', alignItems: 'center', gap: 4, padding: '1px 0 1px ' + (depth * 12 + 14) + 'px', fontSize: 11, lineHeight: '18px', whiteSpace: 'nowrap' },
+                },
+                  h('span', { style: { width: '1em', flexShrink: 0, color } }, fileMark[f.state] || '·'),
+                  h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', color: f.state === 'conflict' || f.state === 'deleted' ? color : 'inherit' } }, name),
+                  side === 'staged'
+                    ? h('button', {
+                        style: { ...styles.btn, ...styles.btnGhost, fontSize: 10, padding: '0 5px' },
+                        disabled: isBusy || Boolean(gitPanel.cmdBusy),
+                        title: t('git.unstageTip'),
+                        onClick: () => stageAction('unstage', [f.path]),
+                      }, '−')
+                    : h('button', {
+                        style: { ...styles.btn, ...styles.btnGhost, fontSize: 10, padding: '0 5px' },
+                        disabled: isBusy || Boolean(gitPanel.cmdBusy),
+                        title: f.state === 'conflict' ? t('git.stageConflictTip') : t('git.stageTip'),
+                        onClick: () => stageAction('stage', [f.path]),
+                      }, '+')))
+              }
+              return rows
+            }
+
+            // 两个区：待提交（已暂存）/ 变更（未暂存，含未跟踪与冲突）
+            const zone = (titleKey, files, side, bulkOp, bulkLabel) =>
+              files.length
+                ? h('div', { key: `zone-${side}`, style: { width: '100%', margin: '4px 0' } },
+                    h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, padding: '2px 0' } },
+                      h('span', { style: { fontSize: 11, fontWeight: 600, color: 'var(--dsw-alias-label-secondary)' } }, `${t(titleKey)} (${files.length})`),
+                      bulkOp
+                        ? h('button', {
+                            style: { ...styles.btn, ...styles.btnGhost, fontSize: 10, padding: '0 6px' },
+                            disabled: isBusy || Boolean(gitPanel.cmdBusy),
+                            onClick: () => stageAction(bulkOp, [...new Set(files.map((f) => f.path))]),
+                          }, gitPanel.cmdBusy === bulkOp ? '…' : bulkLabel)
+                        : null),
+                    h('div', {
+                      style: {
+                        maxHeight: 200, overflowY: 'auto', padding: '2px 8px', borderRadius: 6,
+                        background: 'var(--dsw-alias-bg-layer-2)',
+                        fontFamily: 'var(--dsw-alias-font-family-mono, monospace)',
+                      },
+                    }, treeRows(buildTree(files), '', 0, side)))
+                : null
 
             // 分支列表：搜索过滤，当前分支永远置顶；不含"最近分支"区（保持简洁）
             const qBranch = gitQuery.trim().toLowerCase()
@@ -1040,46 +1198,37 @@ window.__ModuleLoader__.load({
                           : null,
                       ]
                     })(),
-                    // 变更文件清单（默认展开：本地有修改直接可见；点徽标收起）
+                    // 变更文件双区树（默认展开）：待提交 / 变更，逐文件或全部暂存
                     showFiles
-                      ? h('div', {
-                          key: 'files',
-                          style: {
-                            width: '100%', maxHeight: 220, overflowY: 'auto', margin: '4px 0',
-                            padding: '4px 8px', borderRadius: 6, background: 'var(--dsw-alias-bg-layer-2)',
-                            fontFamily: 'var(--dsw-alias-font-family-mono, monospace)',
-                          },
-                        },
-                          st.files
-                            .slice()
-                            .sort((a, b) => (a.state === 'conflict' ? -1 : b.state === 'conflict' ? 1 : 0))
-                            .slice(0, 300)
-                            .map((f, i) => {
-                              const mark = { added: '+', deleted: '-', modified: '~', renamed: '→', copied: '⧉', conflict: '⚠', untracked: '?' }[f.state] || '·'
-                              const color = { added: 'var(--dsw-alias-state-success-primary)', deleted: 'var(--dsw-alias-state-error-primary)', modified: 'var(--dsw-alias-state-warn-primary)', conflict: 'var(--dsw-alias-state-error-primary)' }[f.state] || 'var(--dsw-alias-label-secondary)'
-                              return h('div', {
-                                key: `${f.state}-${f.path}-${i}`,
-                                title: f.orig ? `${f.orig} -> ${f.path}` : f.path,
-                                style: { display: 'flex', gap: 6, fontSize: 11, lineHeight: '18px', color, whiteSpace: 'nowrap' },
-                              },
-                                h('span', { style: { width: '1em', flexShrink: 0 } }, mark),
-                                h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', color: f.state === 'conflict' ? color : 'inherit' } },
-                                  f.path + (f.orig ? `  ← ${f.orig}` : '')))
-                            }),
+                      ? h('div', { key: 'files', style: { width: '100%' } },
+                          zone('git.staged', stagedFiles, 'staged', stagedFiles.length ? 'unstage' : null, `− ${t('git.unstageAll')}`),
+                          zone('git.unstaged', unstagedFiles, 'unstaged', unstagedFiles.length ? 'stage' : null, `＋ ${t('git.stageAll')}`),
                           st.filesTruncated
                             ? h('div', { style: { ...styles.meta, fontSize: 10, padding: '4px 0' } }, t('git.filesTruncated'))
                             : null)
                       : null)
                 : null,
 
-              // 操作栏：behind>0 时 pull 高亮
+              // 操作栏：behind>0 时 pull 高亮；dirty>0 提交可点；ahead>0 推送高亮
               h('div', { style: styles.conToolbar },
                 h('button', { style: styles.btn, disabled: isBusy, title: t('git.confirm.fetch'), onClick: () => requestGitAction('fetch', gitPanel.id) }, `⟳ ${t('git.fetch')}`),
                 h('button', {
                   style: behind > 0 ? { ...styles.btn, ...styles.btnRun } : styles.btn,
                   disabled: isBusy, title: t('git.confirm.pull'),
                   onClick: () => requestGitAction('pull', gitPanel.id),
-                }, `⇣ ${t('git.pull')}${behind > 0 ? ` (${behind})` : ''}`)),
+                }, `⇣ ${t('git.pull')}${behind > 0 ? ` (${behind})` : ''}`),
+                h('button', {
+                  style: stagedFiles.length > 0 ? { ...styles.btn, ...styles.btnRun } : styles.btn,
+                  disabled: isBusy || !stagedFiles.length,
+                  title: stagedFiles.length > 0 ? `${t('git.commitTitle')}（${stagedFiles.length} ${t('git.staged')}）` : t('git.commitNudge'),
+                  onClick: () => setGitCommitDraft({ id: gitPanel.id, msg: '' }),
+                }, `✎ ${t('git.commit')}${stagedFiles.length > 0 ? ` (${stagedFiles.length})` : ''}`),
+                h('button', {
+                  style: ahead > 0 ? { ...styles.btn, ...styles.btnRun } : styles.btn,
+                  disabled: isBusy || !ahead,
+                  title: ahead > 0 ? t('git.pushTip') : t('git.aheadTip'),
+                  onClick: () => requestGitAction('push', gitPanel.id),
+                }, `↑ ${t('git.push')}${ahead > 0 ? ` (${ahead})` : ''}`)),
 
               gitPanel.loading ? h('div', { style: { ...styles.meta, padding: '12px 0' } }, t('loading')) : null,
               gitPanel.error ? h('div', { style: { color: 'var(--dsw-alias-state-error-primary)', padding: '8px 0' } }, gitPanel.error) : null,
@@ -1131,6 +1280,43 @@ window.__ModuleLoader__.load({
                 : null)
           }
 
+          // 提交起草层：必须显式输入提交信息，确认后才走预演→执行（面板永不自动提交）
+          const renderCommitDraft = () => {
+            const d = gitCommitDraft
+            const msg = d.msg || ''
+            const trimmed = msg.trim()
+            // 起草层随时反映当前待提交区（用户可能回列表继续勾选）
+            const sd = gitPanel && gitPanel.id === d.id ? gitPanel.data : null
+            const staged = sd && sd.status && sd.status.ok ? sd.status.files.filter((f) => f.staged) : []
+            return h('div', { style: styles.overlay },
+              h('div', { style: styles.confirmTitle }, `${t('git.commitTitle')} · ${staged.length} ${t('git.staged')}`),
+              staged.length
+                ? null
+                : h('div', { style: { color: 'var(--dsw-alias-state-warn-primary)', margin: '4px 0 6px' } }, `! ${t('git.commitNudge')}`),
+              h('div', { ...styles.meta, marginBottom: 8 }, t('git.commitMsgLabel')),
+              h('textarea', {
+                style: { ...styles.search, width: '100%', minHeight: 64, resize: 'vertical', fontFamily: 'inherit' },
+                value: msg,
+                placeholder: t('git.commitMsgPh'),
+                maxLength: 500,
+                autoFocus: true,
+                onChange: (e) => setGitCommitDraft({ ...d, msg: e.target.value }),
+              }),
+              h('div', { style: { ...styles.meta, marginTop: 4 } }, `${msg.length}/500`),
+              h('div', { style: styles.actions },
+                h('button', { style: styles.btn, onClick: () => setGitCommitDraft(null) }, t('cancel')),
+                h('button', {
+                  style: { ...styles.btn, ...styles.btnRun },
+                  disabled: !trimmed || !staged.length,
+                  title: !trimmed ? t('git.commitMsgPh') : (!staged.length ? t('git.commitNudge') : ''),
+                  onClick: () => {
+                    const m = trimmed
+                    setGitCommitDraft(null)
+                    requestGitAction('commit', d.id, undefined, undefined, m)
+                  },
+                }, t('git.commit'))))
+          }
+
           const renderGitConfirm = () => {
             const isDelete = gitConfirm.op === 'delete'
             const isDanger = isDelete || gitConfirm.op === 'merge-abort'
@@ -1147,6 +1333,7 @@ window.__ModuleLoader__.load({
                     : null,
               kv(t('project'), gitConfirm.id),
               gitConfirm.branch ? kv(t('git.branch'), gitConfirm.branch) : null,
+              gitConfirm.msg ? kv(t('git.commitMsgLabel'), gitConfirm.msg) : null,
               kv(t('cwd'), gitConfirm.cwd),
               h('div', { style: styles.cmdLabel }, t('command')),
               h('pre', { style: styles.pre }, gitConfirm.cmd),
@@ -1548,7 +1735,8 @@ window.__ModuleLoader__.load({
             gitPanel ? renderGitPanel() : null,
             confirm ? renderConfirm() : null,
             con ? renderConsole() : null,
-            gitConfirm ? renderGitConfirm() : null)
+            gitConfirm ? renderGitConfirm() : null,
+            gitCommitDraft ? renderCommitDraft() : null)
         }
 
         ctx.slots.inject('shell.overlay', () =>
