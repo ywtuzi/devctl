@@ -134,6 +134,7 @@ window.__ModuleLoader__.load({
           noProfile: '不指定',
           moduleHint: '多模块仓可只处理其中一个',
           idle: '未运行',
+          'nav.projects': '项目列表',
           git: 'Git',
           'git.branch': '分支',
           'git.local': '本地分支',
@@ -261,6 +262,7 @@ window.__ModuleLoader__.load({
           noProfile: 'None',
           moduleHint: 'Limit to a single module of a multi-module repo',
           idle: 'Not running',
+          'nav.projects': 'Projects',
           git: 'Git',
           'git.branch': 'Branch',
           'git.local': 'Local branches',
@@ -712,6 +714,27 @@ window.__ModuleLoader__.load({
               position: 'absolute', inset: 0, background: 'var(--dsw-alias-bg-overlay)',
               display: 'flex', flexDirection: 'column', overflowY: 'auto', padding: '12px 14px',
             },
+            // 面包屑导航条：页面级覆盖层（git/控制台/提交）的定位标识
+            crumb: {
+              display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap',
+              padding: '6px 12px', fontSize: 11,
+              borderBottom: '1px solid var(--dsw-alias-border-l1)',
+              background: 'var(--dsw-alias-bg-layer-1)', flexShrink: 0,
+            },
+            crumbBtn: {
+              border: 'none', background: 'transparent', color: 'var(--dsw-alias-label-secondary)',
+              fontSize: 11, cursor: 'pointer', padding: '2px 5px', borderRadius: 4,
+            },
+            crumbSep: { color: 'var(--dsw-alias-label-secondary)', opacity: 0.5, padding: '0 1px' },
+            // 底部抽屉：确认卡/提交起草层。不再全屏覆盖——
+            // 上层页面保持可见，用户始终知道自己在哪
+            drawer: {
+              position: 'absolute', left: 0, right: 0, bottom: 0, maxHeight: '68%',
+              overflowY: 'auto', background: 'var(--dsw-alias-bg-overlay)',
+              borderTop: '1px solid var(--dsw-alias-border-l1)',
+              boxShadow: '0 -8px 24px rgba(0,0,0,0.25)', padding: '12px 14px',
+              display: 'flex', flexDirection: 'column', zIndex: 20,
+            },
             confirmTitle: { fontWeight: 600, fontSize: 13, marginBottom: 2 },
             kvRow: { display: 'flex', gap: 8, padding: '2px 0' },
             kvKey: { width: 62, flexShrink: 0, color: 'var(--dsw-alias-label-secondary)' },
@@ -770,6 +793,16 @@ window.__ModuleLoader__.load({
               : h('div', { key: k, style: styles.kvRow },
                   h('span', { style: styles.kvKey }, k),
                   h('span', { style: styles.kvVal }, String(v)))
+
+          // 面包屑：parts = [{label, onClick?}]；有 onClick 的是可返回的父级
+          const crumbs = (parts) =>
+            h('div', { style: styles.crumb },
+              parts.flatMap((p, i) => [
+                i ? h('span', { key: `s${i}`, style: styles.crumbSep }, '/') : null,
+                p.onClick
+                  ? h('button', { key: `b${i}`, style: styles.crumbBtn, onClick: p.onClick, title: p.title || '' }, p.label)
+                  : h('span', { key: `t${i}`, style: { color: 'var(--dsw-alias-label-primary)', fontWeight: 600, padding: '2px 5px' } }, p.label),
+              ]))
 
           const noticeBar = () => {
             if (!notice) return null
@@ -1125,12 +1158,13 @@ window.__ModuleLoader__.load({
                   : null)
 
             return h('div', { style: { ...styles.overlay, padding: '10px 12px' } },
-              h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 } },
-                h('div', null,
-                  h('div', { style: styles.confirmTitle }, `${t('git')} · ${gitPanel.id}`)),
-                h('div', { style: { display: 'flex', gap: 6 } },
-                  h('button', { style: styles.btn, disabled: isBusy, onClick: () => openGitPanel(gitPanel.id), title: t('git.refresh') }, '⟳'),
-                  h('button', { style: styles.btn, onClick: () => setGitPanel(null) }, t('back')))),
+              // 面包屑 + 刷新：定位 = 项目列表 / <id> · Git（负边距让导航条通栏）
+              h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '-10px -12px 8px' } },
+                crumbs([
+                  { label: t('nav.projects'), onClick: () => setGitPanel(null) },
+                  { label: `${gitPanel.id} · ${t('git')}` },
+                ]),
+                h('button', { style: { ...styles.btn, marginRight: 12 }, disabled: isBusy, onClick: () => openGitPanel(gitPanel.id), title: t('git.refresh') }, '⟳')),
 
               // 状态卡：当前分支 + 徽标
               h('div', { style: styles.conStatus },
@@ -1281,6 +1315,7 @@ window.__ModuleLoader__.load({
           }
 
           // 提交起草层：必须显式输入提交信息，确认后才走预演→执行（面板永不自动提交）
+          // 底部抽屉：git 页面保持可见，面包屑定位（项目列表 / <id> · Git / 提交）
           const renderCommitDraft = () => {
             const d = gitCommitDraft
             const msg = d.msg || ''
@@ -1288,8 +1323,13 @@ window.__ModuleLoader__.load({
             // 起草层随时反映当前待提交区（用户可能回列表继续勾选）
             const sd = gitPanel && gitPanel.id === d.id ? gitPanel.data : null
             const staged = sd && sd.status && sd.status.ok ? sd.status.files.filter((f) => f.staged) : []
-            return h('div', { style: styles.overlay },
-              h('div', { style: styles.confirmTitle }, `${t('git.commitTitle')} · ${staged.length} ${t('git.staged')}`),
+            return h('div', { style: styles.drawer },
+              crumbs([
+                { label: t('nav.projects'), onClick: () => setGitCommitDraft(null) },
+                { label: `${d.id} · ${t('git')}` },
+                { label: t('git.commit') },
+              ]),
+              h('div', { style: { ...styles.confirmTitle, marginTop: 8 } }, `${t('git.commitTitle')} · ${staged.length} ${t('git.staged')}`),
               staged.length
                 ? null
                 : h('div', { style: { color: 'var(--dsw-alias-state-warn-primary)', margin: '4px 0 6px' } }, `! ${t('git.commitNudge')}`),
@@ -1320,7 +1360,7 @@ window.__ModuleLoader__.load({
           const renderGitConfirm = () => {
             const isDelete = gitConfirm.op === 'delete'
             const isDanger = isDelete || gitConfirm.op === 'merge-abort'
-            return h('div', { style: styles.overlay },
+            return h('div', { style: styles.drawer },
               h('div', { style: { ...styles.confirmTitle, ...(isDanger ? { color: 'var(--dsw-alias-state-error-primary)' } : {}) } },
                 t(`git.confirm.${gitConfirm.op}`)),
               h('div', { ...styles.meta, marginBottom: 8 }, t('confirmHint')),
@@ -1362,7 +1402,7 @@ window.__ModuleLoader__.load({
           const renderConfirm = () => {
             const { mode, project, task, plan, loading: planLoading, error: planError } = confirm
             const isRelease = task.section === 'release'
-            return h('div', { style: styles.overlay },
+            return h('div', { style: styles.drawer },
               h('div', { style: styles.confirmTitle },
                 isRelease ? t('confirmRelease') : mode === 'run' ? t('confirmRun') : t('confirmBuild')),
               h('div', {
@@ -1427,12 +1467,12 @@ window.__ModuleLoader__.load({
               ? (runningByProject[rec.projectId] ? t('running') : t('building'))
               : rec ? (rec.status === 'success' ? t('done') : rec.status) : ''
             return h('div', { style: { ...styles.overlay, padding: '10px 12px' } },
-              h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 } },
-                h('div', null,
-                  h('div', { style: styles.confirmTitle }, `${t('console')} · ${rec ? rec.projectId : con.runId}`),
-                  h('div', { style: styles.meta }, rec ? rec.task : '')),
-                h('button', { style: styles.btn, onClick: () => setCon(null) }, t('back'))),
-
+              h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '-10px -12px 8px' } },
+                crumbs([
+                  { label: t('nav.projects'), onClick: () => setCon(null) },
+                  { label: `${rec ? rec.projectId : con.runId} · ${t('console')}` },
+                ])),
+              rec && rec.task ? h('div', { style: { ...styles.meta, margin: '-4px 0 4px' } }, rec.task) : null,
               h('div', { style: styles.conStatus },
                 h('div', null,
                   h('span', { style: isRun ? styles.dot : styles.dotIdle }),
