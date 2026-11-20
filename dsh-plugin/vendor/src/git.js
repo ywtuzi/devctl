@@ -110,7 +110,45 @@ export function readBaseBranch(absPath) {
  * 单仓 git 状态详情：当前分支、upstream、ahead/behind、脏文件数、未跟踪数。
  * 一次 `status -sb -unormal` 全部拿到。非 git 目录返回 { ok, error }。
  */
-/** 解析 `git status -sb -unormal` 输出（导出供测试） */
+/**
+ * 状态码 → 变更类型（与 VSCode/GitLens 的资源状态对齐）：
+ *   unmerged（UU/AA/DD/AU/UA/DU/UD）冲突；其余看暂存区(x)优先、工作区(y)兜底
+ *   A=新增 D=删除 M=修改 R=重命名 C=复制 T=类型变更 ?=未跟踪
+ */
+function fileState(x, y) {
+  // 未合并码：UU/AA/DD/AU/UA/DU/UD（x/y 至少一个是 U，或 AA/DD 成对）
+  if (x === 'U' || y === 'U' || (x === 'A' && y === 'A') || (x === 'D' && y === 'D')) return 'conflict'
+  const ch = x !== ' ' ? x : y
+  if (ch === 'A') return 'added'
+  if (ch === 'D') return 'deleted'
+  if (ch === 'R') return 'renamed'
+  if (ch === 'C') return 'copied'
+  if (ch === 'M' || ch === 'T') return 'modified'
+  return 'modified'
+}
+
+/** 去掉 core.quotepath 的 C 风格引号（覆盖常见转义；不追求完备） */
+function unquotePath(s) {
+  if (!s.startsWith('"')) return s
+  try {
+    return s
+      .slice(1, -1)
+      .replace(/\\([0-7]{3})/g, (_, o) => String.fromCharCode(parseInt(o, 8)))
+      .replace(/\\"/g, '"')
+      .replace(/\\\\/g, '\\')
+  } catch {
+    return s
+  }
+}
+
+/**
+ * 解析 `git status -sb -unormal` 输出（导出供测试）。
+ * 除计数外还产出 files 变更文件清单（零额外 spawn，同一条命令解析而来）：
+ *   [{ path, state, staged }]，state ∈ added/deleted/modified/renamed/copied/conflict/untracked
+ * 上限 MAX_FILES 条（防巨仓把 /git-detail 响应撑爆），截断时 filesTruncated=true。
+ */
+const MAX_FILES = 300
+
 export function parseStatusSb(out) {
   const lines = out.split('\n')
   const header = lines[0] || ''
@@ -132,13 +170,35 @@ export function parseStatusSb(out) {
   let staged = 0
   let modified = 0
   let untracked = 0
+  const files = []
+  const counts = { added: 0, deleted: 0, modified: 0, renamed: 0, copied: 0, conflict: 0, untracked: 0 }
+  let filesTruncated = false
   for (const l of lines.slice(1)) {
     if (!l) continue
     const x = l[0]
     const y = l[1]
-    if (x === '?') untracked++
-    else if (x !== ' ' && x !== '#') staged++
+    if (x === '?') {
+      untracked++
+      counts.untracked++
+    } else if (x !== ' ' && x !== '#') staged++
     else if (y !== ' ' && y !== '#') modified++
+    // 计数始终统计（截断只影响清单展示，不影响徽标数字）
+    const state0 = x === '?' ? 'untracked' : fileState(x, y)
+    if (x !== '?') counts[state0]++
+    if (files.length < MAX_FILES) {
+      const raw = l.slice(3)
+      // 重命名/复制："old -> new"，展示新路径、旧路径放进原名
+      let path = unquotePath(raw)
+      let orig = null
+      const rm = path.match(/^(.*) -> (.*)$/)
+      if (rm && (x === 'R' || x === 'C' || y === 'R' || y === 'C')) {
+        orig = rm[1]
+        path = rm[2]
+      }
+      files.push({ path, orig, state: state0, staged: x !== '?' && x !== ' ' })
+    } else {
+      filesTruncated = true
+    }
   }
   return {
     ok: true,
@@ -150,6 +210,10 @@ export function parseStatusSb(out) {
     modified,
     untracked,
     dirty: staged + modified,
+    conflicts: counts.conflict,
+    fileCounts: counts,
+    files,
+    filesTruncated,
   }
 }
 
@@ -280,6 +344,20 @@ export async function gitUpdateBranch(absPath, branch) {
   return git(absPath, ['fetch', remote, `${branch}:${branch}`], 300000)
 }
 
+/**
+ * 合并分支到当前分支（--no-edit：不弹编辑器，直接用默认 merge 信息）。
+ * 冲突时 git 以非零退出结束，冲突文件留在 index 的未合并状态——
+ * 面板据 conflicts 徽标提示，可用 gitMergeAbort 放弃回到合并前。
+ */
+export async function gitMerge(absPath, branch) {
+  return git(absPath, ['merge', '--no-edit', branch], 300000)
+}
+
+/** 放弃进行中的合并：工作区与 index 回到 MERGE_HEAD 之前的状态 */
+export async function gitMergeAbort(absPath) {
+  return git(absPath, ['merge', '--abort'], 60000)
+}
+
 /** 预演用：各操作实际会执行的命令行（展示给用户确认的就是真正执行的） */
 export const gitCommandPreview = {
   fetch: (remote) => `git fetch --prune${remote ? ` ${remote}` : ''}`,
@@ -287,6 +365,8 @@ export const gitCommandPreview = {
   switch: (branch) => `git switch ${branch}`,
   update: (branch, remote = 'origin') => `git fetch ${remote} ${branch}:${branch}`,
   delete: (branch, force = false) => `git branch -${force ? 'D' : 'd'} ${branch}`,
+  merge: (branch) => `git merge --no-edit ${branch}`,
+  'merge-abort': () => 'git merge --abort',
 }
 
 /* ------------------------------ 并发限流 ------------------------------ */

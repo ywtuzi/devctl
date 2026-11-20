@@ -521,7 +521,7 @@ async function cmdGit(opts, ctx) {
   const sub = opts._[1]
   const id = opts._[2]
   const arg = opts._[3]
-  const { readBranchFast, gitStatusDetail, gitBranches, gitFetch, gitPull, gitSwitch, gitUpdateBranch, gitDeleteBranch, parseFetchDeleted, mapLimit } = await import('../src/git.js')
+  const { readBranchFast, gitStatusDetail, gitBranches, gitFetch, gitPull, gitSwitch, gitUpdateBranch, gitDeleteBranch, gitMerge, gitMergeAbort, parseFetchDeleted, mapLimit } = await import('../src/git.js')
 
   if (sub === 'status') {
     // devctl git status [--json]：全部项目的分支速览（零 spawn 直读）
@@ -539,7 +539,7 @@ async function cmdGit(opts, ctx) {
     return
   }
 
-  if (!id) fail('用法: devctl git <status|branches|fetch|pull|switch> <项目ID> [分支名]')
+  if (!id) fail('用法: devctl git <status|branches|files|fetch|pull|switch|update|delete|merge|abort> <项目ID> [分支名]')
   const projects = scan(ctx.root, ctx.config)
   const project = requireProject(projects, id)
 
@@ -604,7 +604,45 @@ async function cmdGit(opts, ctx) {
     return
   }
 
-  fail(`未知 git 子命令: ${sub}\n  可用: status / branches / fetch / pull / switch`)
+  if (sub === 'files') {
+    // devctl git files <项目ID>：变更文件清单（新增/删除/修改/冲突/未跟踪，同一条 status 解析）
+    const r = await gitStatusDetail(project.absPath)
+    if (!r.ok) fail(r.error)
+    if (opts.json) return console.log(JSON.stringify(r, null, 2))
+    const mark = { added: c.green('+'), deleted: c.red('-'), modified: c.yellow('~'), renamed: c.yellow('→'), copied: c.yellow('⧉'), conflict: c.red('⚠'), untracked: c.dim('?') }
+    if (!r.files.length) return console.log(`${c.green('✓')} 工作区干净`)
+    for (const f of r.files) {
+      const m = mark[f.state] || ' '
+      console.log(`  ${m} ${f.path}${f.orig ? c.dim(`  (原 ${f.orig})`) : ''}${f.state === 'conflict' ? c.red('  ← 冲突未解决') : ''}`)
+    }
+    if (r.filesTruncated) console.log(c.dim(`  … 清单已截断（共超 ${r.files.length} 条，用 --json 看完整状态或直接看 git status）`))
+    return
+  }
+
+  if (sub === 'merge') {
+    // 合并分支到当前分支；冲突时 git 非零退出，冲突文件留在未合并状态
+    if (!arg) fail('用法: devctl git merge <项目ID> <分支名>')
+    const r = await gitMerge(project.absPath, arg)
+    if (opts.json) return console.log(JSON.stringify({ ok: r.ok, out: r.out.trim(), error: r.err }))
+    if (!r.ok) {
+      console.error(`${c.red('✗')} merge 失败（可能有冲突）：\n${r.out || r.err}`)
+      console.error(c.yellow('  解决冲突后提交，或 devctl git abort 回到合并前'))
+      process.exit(1)
+    }
+    console.log(r.out.trim() || `${c.green('✓')} ${project.id} · 已合并 ${arg}`)
+    return
+  }
+
+  if (sub === 'abort') {
+    // 放弃进行中的合并（merge --abort）
+    const r = await gitMergeAbort(project.absPath)
+    if (opts.json) return console.log(JSON.stringify({ ok: r.ok, out: r.out.trim(), error: r.err }))
+    if (!r.ok) fail(r.err || 'abort 失败（当前可能没有进行中的合并）')
+    console.log(`${c.green('✓')} ${project.id} · 已放弃合并，回到合并前状态`)
+    return
+  }
+
+  fail(`未知 git 子命令: ${sub}\n  可用: status / branches / files / fetch / pull / switch / update / delete / merge / abort`)
 }
 
 function cmdDoctor(opts, ctx) {  const cfg = ctx.config

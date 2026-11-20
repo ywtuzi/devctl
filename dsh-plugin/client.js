@@ -175,6 +175,23 @@ window.__ModuleLoader__.load({
           'git.notTrackingTip': '远端已有同名分支，但本地没设置 upstream；可执行 git branch --set-upstream-to 关联',
           'git.noRemote': '无远端',
           'git.noRemoteTip': '远端当前没有同名分支：可能从未推送，也可能已在远端删除',
+          'git.merge': '合并',
+          'git.mergeTip': '把该分支合并进当前分支（git merge --no-edit）',
+          'git.confirm.merge': '确认合并该分支？',
+          'git.confirm.merge-abort': '确认放弃合并？',
+          'git.mergeAbortHint': '工作区与暂存区将回到合并前的状态，冲突标记全部清除',
+          'git.conflictBanner': '存在未解决的合并冲突',
+          'git.abort': '放弃合并',
+          'git.files': '变更文件',
+          'git.filesHint': '点击徽标展开/收起变更文件清单',
+          'git.filesTruncated': '清单过长已截断，完整状态请看 git status',
+          'git.f.added': '新增',
+          'git.f.deleted': '删除',
+          'git.f.modified': '修改',
+          'git.f.renamed': '重命名',
+          'git.f.copied': '复制',
+          'git.f.conflict': '冲突',
+          'git.f.untracked': '未跟踪',
         })
         ctx.locale.register('devctl', 'en', {
           title: 'Project runner', subtitle: 'Status panel · confirm before run',
@@ -269,6 +286,23 @@ window.__ModuleLoader__.load({
           'git.notTrackingTip': 'the remote already has this branch, but locally no upstream is set; run git branch --set-upstream-to',
           'git.noRemote': 'no remote',
           'git.noRemoteTip': 'no same-named branch on the remote now: it may never have been pushed, or was deleted there',
+          'git.merge': 'merge',
+          'git.mergeTip': 'merge this branch into the current one (git merge --no-edit)',
+          'git.confirm.merge': 'Merge this branch?',
+          'git.confirm.merge-abort': 'Abort the merge?',
+          'git.mergeAbortHint': 'working tree and index return to the pre-merge state; all conflict markers are cleared',
+          'git.conflictBanner': 'unresolved merge conflicts',
+          'git.abort': 'Abort merge',
+          'git.files': 'Changes',
+          'git.filesHint': 'click a badge to expand/collapse the changed-file list',
+          'git.filesTruncated': 'list truncated; run git status for the full picture',
+          'git.f.added': 'added',
+          'git.f.deleted': 'deleted',
+          'git.f.modified': 'modified',
+          'git.f.renamed': 'renamed',
+          'git.f.copied': 'copied',
+          'git.f.conflict': 'conflict',
+          'git.f.untracked': 'untracked',
         })
         const t = ctx.locale.bind('devctl')
 
@@ -290,6 +324,8 @@ window.__ModuleLoader__.load({
           // 各项目最近一次 git-detail 的已知状态（脏/领先落后），行内 chip 展示用
           const [gitKnown, setGitKnown] = useState({})
           const [gitQuery, setGitQuery] = useState('')
+          // git 面板里的变更文件清单展开状态（按项目 id 记，切项目互不影响）
+          const [gitShowFiles, setGitShowFiles] = useState(false)
           const [excluded, setExcluded] = useState([])
           const [running, setRunning] = useState([])
           const [recent, setRecent] = useState([])
@@ -734,6 +770,7 @@ window.__ModuleLoader__.load({
             setConfirm(null)
             setCon(null)
             setGitQuery('')
+            setGitShowFiles(false)
             setGitPanel({ id, loading: true, data: null, error: null })
             try {
               const d = await call(`/git-detail?id=${encodeURIComponent(id)}`)
@@ -755,7 +792,7 @@ window.__ModuleLoader__.load({
             setGitPanel((g) => (g && g.id === id ? { ...g, cmdBusy: op } : g))
             try {
               const pv = await post('/git-action', { id, op, branch, remote, preview: true })
-              setGitConfirm({ op, id, branch: branch || null, cmd: pv.cmd, cwd: pv.cwd, error: null })
+              setGitConfirm({ op, id, branch: branch || null, cmd: pv.cmd, cwd: pv.cwd, warn: pv.warn || null, error: null })
             } catch (e) {
               console.error('[devctl] git preview failed:', e)
               const msg = `git ${op}: ${e.message}`
@@ -782,10 +819,19 @@ window.__ModuleLoader__.load({
                 // git 面板是 inset:0 的覆盖层，会把面板底部的 notice 条整个挡住，
                 // 只写 notice 用户什么都看不到。失败时也不刷新面板，保留错误现场
                 const reason = String(r.error || r.out || '').split('\n')[0].slice(0, 200) || '未知原因'
-                const hint = cur.op === 'delete' ? '（未合并分支受保护；确认放弃该分支请到终端执行 git branch -D）' : ''
+                const hint = cur.op === 'delete'
+                  ? '（未合并分支受保护；确认放弃该分支请到终端执行 git branch -D）'
+                  : cur.op === 'merge'
+                    ? '（多为冲突：解决冲突后提交，或点「放弃合并」回到合并前）'
+                    : ''
                 const msg = `git ${cur.op} 失败: ${reason}${hint}`
                 setNotice({ error: msg })
                 setGitPanel((g) => (g && g.id === cur.id ? { ...g, error: msg } : g))
+                // merge 冲突恰恰需要看现场：刷新详情让冲突横幅/清单出现（错误信息仍在面板顶部）
+                if (cur.op === 'merge') {
+                  await openGitPanel(cur.id)
+                  setGitPanel((g) => (g && g.id === cur.id ? { ...g, error: msg } : g))
+                }
                 return
               }
               // fetch --prune 清理掉的远端分支：分支行上的 gone 徽标依赖本地分支的
@@ -917,6 +963,15 @@ window.__ModuleLoader__.load({
                       title: t('git.deleteTip'),
                       onClick: () => requestGitAction('delete', gitPanel.id, b.name),
                     }, '×')
+                  : null,
+                // 合并进当前分支（非当前本地分支；冲突时状态卡会出现「放弃合并」）
+                !b.current
+                  ? h('button', {
+                      style: { ...styles.btn, ...styles.btnGhost, fontSize: 10, padding: '1px 6px' },
+                      disabled: isBusy || Boolean(gitPanel.cmdBusy),
+                      title: t('git.mergeTip'),
+                      onClick: () => requestGitAction('merge', gitPanel.id, b.name),
+                    }, gitPanel.cmdBusy === 'merge' ? '…' : `⇤ ${t('git.merge')}`)
                   : null)
 
             return h('div', { style: { ...styles.overlay, padding: '10px 12px' } },
@@ -940,6 +995,89 @@ window.__ModuleLoader__.load({
                 h('div', { style: styles.meta },
                   [st && st.ok ? st.upstream || t('git.noUpstream') : null,
                    st && st.ok && st.untracked ? `${st.untracked} ${t('git.untracked')}` : null].filter(Boolean).join(' · '))),
+
+              // 冲突横幅：merge 撞冲突时 git 停在未合并状态，这里给出「放弃合并」出口
+              st && st.ok && st.conflicts > 0
+                ? h('div', {
+                    style: {
+                      display: 'flex', alignItems: 'center', gap: 8, margin: '6px 0', padding: '6px 10px',
+                      borderRadius: 6, fontSize: 12,
+                      background: 'var(--dsw-alias-state-error-primary)', color: '#fff',
+                    },
+                  },
+                  h('span', { style: { flex: 1, minWidth: 0 } }, `⚠ ${st.conflicts} ${t('git.conflictBanner')}`),
+                  h('button', {
+                    style: { ...styles.btn, borderColor: 'rgba(255,255,255,.7)', color: '#fff', background: 'transparent', fontSize: 11, padding: '1px 8px' },
+                    disabled: isBusy || Boolean(gitPanel.cmdBusy),
+                    onClick: () => requestGitAction('merge-abort', gitPanel.id),
+                  }, t('git.abort')))
+                : null,
+
+              // 变更文件徽标行：+新增 ~修改 -删除 →重命名 ?未跟踪 ⚠冲突（数据来自同一条 status，零额外请求）
+              st && st.ok && st.files && st.files.length
+                ? h('div', { style: { display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', margin: '4px 0' } },
+                    (() => {
+                      const fc = st.fileCounts || {}
+                      const cnt = { conflict: fc.conflict || 0, added: fc.added || 0, modified: fc.modified || 0, deleted: fc.deleted || 0, renamed: (fc.renamed || 0) + (fc.copied || 0), untracked: st.untracked || 0 }
+                      const chipDefs = [
+                        ['conflict', `⚠ ${t('git.f.conflict')} ${cnt.conflict}`, 'var(--dsw-alias-state-error-primary)'],
+                        ['added', `+${t('git.f.added')} ${cnt.added}`, 'var(--dsw-alias-state-success-primary)'],
+                        ['modified', `~${t('git.f.modified')} ${cnt.modified}`, 'var(--dsw-alias-state-warn-primary)'],
+                        ['deleted', `-${t('git.f.deleted')} ${cnt.deleted}`, 'var(--dsw-alias-state-error-primary)'],
+                        ['renamed', `→${t('git.f.renamed')} ${cnt.renamed}`, 'var(--dsw-alias-label-secondary)'],
+                        ['untracked', `?${t('git.f.untracked')} ${cnt.untracked}`, 'var(--dsw-alias-label-secondary)'],
+                      ].filter(([k]) => cnt[k] > 0)
+                      return [
+                        ...chipDefs.map(([k, text, color]) =>
+                          h('button', {
+                            key: k,
+                            style: {
+                              display: 'inline-flex', padding: '1px 7px', borderRadius: 999, fontSize: 10, fontWeight: 600,
+                              border: 'none', cursor: 'pointer',
+                              background: gitShowFiles ? 'var(--dsw-alias-bg-layer-active, rgba(128,128,128,.18))' : 'var(--dsw-alias-bg-layer-2)',
+                              color,
+                            },
+                            title: t('git.filesHint'),
+                            onClick: () => setGitShowFiles((v) => !v),
+                          }, text),
+                        ),
+                        gitShowFiles
+                          ? h('span', { key: 'more', style: { ...styles.meta, fontSize: 10 } },
+                              `${st.files.length}${st.filesTruncated ? '+' : ''} ${t('git.files')}`)
+                          : null,
+                      ]
+                    })(),
+                    // 变更文件清单（折叠区；每行状态字母 + 路径，冲突置顶）
+                    gitShowFiles
+                      ? h('div', {
+                          key: 'files',
+                          style: {
+                            width: '100%', maxHeight: 220, overflowY: 'auto', margin: '4px 0',
+                            padding: '4px 8px', borderRadius: 6, background: 'var(--dsw-alias-bg-layer-2)',
+                            fontFamily: 'var(--dsw-alias-font-family-mono, monospace)',
+                          },
+                        },
+                          st.files
+                            .slice()
+                            .sort((a, b) => (a.state === 'conflict' ? -1 : b.state === 'conflict' ? 1 : 0))
+                            .slice(0, 300)
+                            .map((f, i) => {
+                              const mark = { added: '+', deleted: '-', modified: '~', renamed: '→', copied: '⧉', conflict: '⚠', untracked: '?' }[f.state] || '·'
+                              const color = { added: 'var(--dsw-alias-state-success-primary)', deleted: 'var(--dsw-alias-state-error-primary)', modified: 'var(--dsw-alias-state-warn-primary)', conflict: 'var(--dsw-alias-state-error-primary)' }[f.state] || 'var(--dsw-alias-label-secondary)'
+                              return h('div', {
+                                key: `${f.state}-${f.path}-${i}`,
+                                title: f.orig ? `${f.orig} -> ${f.path}` : f.path,
+                                style: { display: 'flex', gap: 6, fontSize: 11, lineHeight: '18px', color, whiteSpace: 'nowrap' },
+                              },
+                                h('span', { style: { width: '1em', flexShrink: 0 } }, mark),
+                                h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', color: f.state === 'conflict' ? color : 'inherit' } },
+                                  f.path + (f.orig ? `  ← ${f.orig}` : '')))
+                            }),
+                          st.filesTruncated
+                            ? h('div', { style: { ...styles.meta, fontSize: 10, padding: '4px 0' } }, t('git.filesTruncated'))
+                            : null)
+                      : null)
+                : null,
 
               // 操作栏：behind>0 时 pull 高亮
               h('div', { style: styles.conToolbar },
@@ -1002,13 +1140,18 @@ window.__ModuleLoader__.load({
 
           const renderGitConfirm = () => {
             const isDelete = gitConfirm.op === 'delete'
+            const isDanger = isDelete || gitConfirm.op === 'merge-abort'
             return h('div', { style: styles.overlay },
-              h('div', { style: { ...styles.confirmTitle, ...(isDelete ? { color: 'var(--dsw-alias-state-error-primary)' } : {}) } },
+              h('div', { style: { ...styles.confirmTitle, ...(isDanger ? { color: 'var(--dsw-alias-state-error-primary)' } : {}) } },
                 t(`git.confirm.${gitConfirm.op}`)),
               h('div', { ...styles.meta, marginBottom: 8 }, t('confirmHint')),
               isDelete
                 ? h('div', { style: { color: 'var(--dsw-alias-state-warn-primary)', margin: '6px 0' } }, `! ${t('git.deleteHint')}`)
-                : null,
+                : gitConfirm.op === 'merge-abort'
+                  ? h('div', { style: { color: 'var(--dsw-alias-state-warn-primary)', margin: '6px 0' } }, `! ${t('git.mergeAbortHint')}`)
+                  : gitConfirm.warn
+                    ? h('div', { style: { color: 'var(--dsw-alias-state-warn-primary)', margin: '6px 0' } }, `! ${gitConfirm.warn}`)
+                    : null,
               kv(t('project'), gitConfirm.id),
               gitConfirm.branch ? kv(t('git.branch'), gitConfirm.branch) : null,
               kv(t('cwd'), gitConfirm.cwd),
@@ -1029,7 +1172,7 @@ window.__ModuleLoader__.load({
                     }, '强制删除')
                   : null,
                 h('button', {
-                  style: isDelete
+                  style: isDanger
                     ? { ...styles.btn, ...styles.btnStop }
                     : { ...styles.btn, ...styles.btnRun },
                   onClick: () => executeGitAction(false),

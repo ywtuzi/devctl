@@ -26,6 +26,26 @@ ok('behind only', r.behind === 3 && r.ahead === 0)
 r = parseStatusSb('## HEAD (no branch)\n')
 ok('detached header', r.branch === null)
 
+// 变更文件清单：状态分类 + 重命名 + 冲突 + 截断
+r = parseStatusSb('## main\nA  new.js\nD  gone.js\n M mod.js\nR  old.js -> moved.js\n?? unt.txt\nUU both.js\nDD dup.js\nAU addu.js\n')
+ok('files: added', r.files.find((f) => f.path === 'new.js')?.state === 'added')
+ok('files: deleted', r.files.find((f) => f.path === 'gone.js')?.state === 'deleted')
+ok('files: modified unstaged', r.files.find((f) => f.path === 'mod.js')?.state === 'modified')
+ok('files: rename keeps orig', (() => { const f = r.files.find((x) => x.path === 'moved.js'); return f && f.orig === 'old.js' && f.state === 'renamed' })())
+ok('files: untracked', r.files.find((f) => f.path === 'unt.txt')?.state === 'untracked')
+ok('conflict codes UU/DD/AU', ['both.js', 'dup.js', 'addu.js'].every((p) => r.files.find((f) => f.path === p)?.state === 'conflict'))
+ok('conflicts count', r.conflicts === 3 && r.fileCounts.conflict === 3)
+ok('fileCounts sums', r.fileCounts.added === 1 && r.fileCounts.deleted === 1 && r.fileCounts.renamed === 1 && r.fileCounts.untracked === 1)
+ok('clean repo no files', parseStatusSb('## main\n').files.length === 0)
+
+// 截断：MAX_FILES 之上不再收集，但计数继续
+{
+  const many = ['## main'].concat(Array.from({ length: 400 }, (_, i) => `M  f${i}.js`)).join('\n')
+  const rr = parseStatusSb(many)
+  ok('files truncated', rr.files.length === 300 && rr.filesTruncated === true)
+  ok('counts not truncated', rr.fileCounts.modified === 400)
+}
+
 // readBranchFast：临时目录构造 .git
 const tmp = mkdtempSync(join(tmpdir(), 'devctl-git-'))
 try {

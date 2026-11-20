@@ -635,10 +635,10 @@ export function apply(ctx, config) {
         const body = await readBody(req)
         const { id, op } = body
         if (!id || !op) return send(res, 400, { error: '缺少 id 或 op' })
-        if (!['fetch', 'pull', 'switch', 'update', 'delete'].includes(op)) {
+        if (!['fetch', 'pull', 'switch', 'update', 'delete', 'merge', 'merge-abort'].includes(op)) {
           return send(res, 400, { error: `不支持的操作: ${op}` })
         }
-        if ((op === 'switch' || op === 'update' || op === 'delete') && !body.branch) {
+        if ((op === 'switch' || op === 'update' || op === 'delete' || op === 'merge') && !body.branch) {
           return send(res, 400, { error: `${op} 需要 branch` })
         }
         if (body.branch && !/^[A-Za-z0-9_./-]+$/.test(body.branch)) {
@@ -663,14 +663,18 @@ export function apply(ctx, config) {
               ? force
                 ? '强制删除未合并分支：该分支独有的提交会被丢弃（确认已在别处保留再用）'
                 : '只删除已合并分支；未合并分支会被拒绝（防止丢提交）'
-              : null
+              : op === 'merge'
+                ? '把该分支合并进当前分支；如产生冲突，文件会标记为未合并状态（面板会出现「放弃合并」按钮）'
+                : op === 'merge-abort'
+                  ? '放弃进行中的合并，工作区与暂存区回到合并前状态'
+                  : null
           return send(res, 200, {
             id, op, cmd, warn,
             cwd: (await getScan(root, cli)).projects.find((p) => p.id === id)?.absPath || null,
           })
         }
         const args = ['git', op, id]
-        if (op === 'switch' || op === 'update' || op === 'delete') args.push(body.branch)
+        if (op === 'switch' || op === 'update' || op === 'delete' || op === 'merge') args.push(body.branch)
         // force 只对 delete 生效（-D），其余操作忽略，避免误传导致命令语义漂移
         if (op === 'delete' && body.force === true) args.push('--force')
         args.push('--json')
